@@ -3846,7 +3846,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
             self.open_img_btn.setIcon(self.icon_factory.folder_icon(color=icon_color))
             self.open_img_btn.setIconSize(QSize(20, 20))
             self.open_img_btn.clicked.connect(self.open_img_archive)
-            self.open_img_btn.setToolTip("Open an IMG archive and browse its COL entries")
+            self.open_img_btn.setToolTip("Open an IMG archive and browse its DFF/COL entries")
             layout.addWidget(self.open_img_btn)
 
             # "From IMG" — pick a COL entry from the currently loaded IMG in IMG Factory
@@ -3855,7 +3855,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
             self.from_img_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
             self.from_img_btn.setIconSize(QSize(20, 20))
             self.from_img_btn.clicked.connect(self._pick_col_from_current_img)
-            self.from_img_btn.setToolTip("Pick a COL entry from the currently loaded IMG")
+            self.from_img_btn.setToolTip("Pick a DFF/COL entry from the currently loaded IMG")
             layout.addWidget(self.from_img_btn)
 
         # Open button
@@ -3867,7 +3867,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.open_btn.setShortcut("Ctrl+O")
         if self.button_display_mode == 'icons':
             self.open_btn.setFixedSize(40, 40)
-        self.open_btn.setToolTip("Open COL file (Ctrl+O)")
+        self.open_btn.setToolTip("Open DFF or COL model file (Ctrl+O)")
         self.open_btn.clicked.connect(self._open_file)
         layout.addWidget(self.open_btn)
 
@@ -3881,7 +3881,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         if self.button_display_mode == 'icons':
             self.save_btn.setFixedSize(40, 40)
         self.save_btn.setEnabled(True)
-        self.save_btn.setToolTip("Save COL file (Ctrl+S)")
+        self.save_btn.setToolTip("Export/save model (Ctrl+S)")
         self.save_btn.clicked.connect(self._save_file)
         layout.addWidget(self.save_btn)
 
@@ -3895,7 +3895,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         if self.button_display_mode == 'icons':
             self.saveall_btn.setFixedSize(40, 40)
         self.saveall_btn.setEnabled(True)
-        self.saveall_btn.setToolTip("Save COL file (Ctrl+S)")
+        self.saveall_btn.setToolTip("Export/save model (Ctrl+S)")
         self.saveall_btn.clicked.connect(self._saveall_file)
         #layout.addWidget(self.saveall_btn)
 
@@ -3903,7 +3903,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.export_all_btn.setFont(self.button_font)
         self.export_all_btn.setIcon(self.icon_factory.package_icon(color=icon_color))
         self.export_all_btn.setIconSize(QSize(20, 20))
-        self.export_all_btn.setToolTip("Export all as col, cst or 3ds files")
+        self.export_all_btn.setToolTip("Export geometries as OBJ, COL, or other formats")
         self.export_all_btn.clicked.connect(self.export_all)
         self.export_all_btn.setEnabled(True)
         layout.addWidget(self.export_all_btn)
@@ -3996,6 +3996,22 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.close_btn.clicked.connect(self.close)
         self.close_btn.setToolTip("Close Window") # closes tab
         layout.addWidget(self.close_btn)
+
+        # ── DFF View presets ──────────────────────────────────────────────
+        layout.addWidget(self._make_separator() if hasattr(self, '_make_separator')
+                         else QFrame())
+        for v_label, v_yaw, v_pitch in [("XY", 0, 0), ("XZ", 0, 90),
+                                         ("YZ", 90, 0), ("Iso", 30, 20)]:
+            vb = QPushButton(v_label)
+            vb.setFont(self.button_font)
+            vb.setFixedWidth(36)
+            vb.setToolTip(f"View preset: {v_label}")
+            def _set_v(checked=False, y=v_yaw, p=v_pitch):
+                pw = getattr(self, 'preview_widget', None)
+                if pw and isinstance(pw, COL3DViewport):
+                    pw._yaw = y; pw._pitch = p; pw.update()
+            vb.clicked.connect(_set_v)
+            layout.addWidget(vb)
 
         return self.toolbar
 
@@ -4411,7 +4427,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.open_col_btn.setFont(self.button_font)
         self.open_col_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
         self.open_col_btn.setIconSize(QSize(20, 20))
-        self.open_col_btn.setToolTip("Open COL file")
+        self.open_col_btn.setToolTip("Open DFF/COL model file")
         self.open_col_btn.clicked.connect(self._open_file)
         btn_layout.addWidget(self.open_col_btn)
 
@@ -4419,7 +4435,7 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.save_col_btn.setFont(self.button_font)
         self.save_col_btn.setIcon(self.icon_factory.save_icon(color=icon_color))
         self.save_col_btn.setIconSize(QSize(20, 20))
-        self.save_col_btn.setToolTip("Save COL file")
+        self.save_col_btn.setToolTip("Save model file")
         self.save_col_btn.clicked.connect(self._save_file)
         self.save_col_btn.setEnabled(True)
         btn_layout.addWidget(self.save_col_btn)
