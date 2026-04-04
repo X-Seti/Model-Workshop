@@ -54,6 +54,45 @@ from apps.methods.col_workshop_loader import COLFile
 
 
 # Temporary 3D viewport placeholder
+
+
+# ── DFF → Viewport adapter ─────────────────────────────────────────────────────
+class _DFFGeometryAdapter:
+    """Adapts a DFF Geometry for use with COL3DViewport.
+
+    The viewport expects model.vertices (objects with .x .y .z) and
+    model.faces (objects with .vertex_indices or .a .b .c).
+    DFF Geometry has .vertices (Vector3) and .triangles (Triangle with .v1 .v2 .v3).
+    This adapter translates between the two.
+    """
+
+    class _FaceAdapter:
+        """Wraps a DFF Triangle so the viewport can read it as a COL face."""
+        __slots__ = ('vertex_indices', 'material', 'a', 'b', 'c')
+        def __init__(self, tri):
+            self.vertex_indices = (tri.v1, tri.v2, tri.v3)
+            self.a = tri.v1
+            self.b = tri.v2
+            self.c = tri.v3
+            self.material = tri.material_id   # int (palette index for colour)
+
+    def __init__(self, geometry, geometry_index: int = 0):
+        self.vertices = geometry.vertices             # List[Vector3] — .x .y .z
+        self.faces    = [self._FaceAdapter(t) for t in geometry.triangles]
+        self.spheres  = []    # no collision spheres in DFF geometry
+        self.boxes    = []    # no collision boxes in DFF geometry
+        self.name     = f"geometry_{geometry_index}"
+        self._geometry = geometry    # keep reference to original
+
+    @property
+    def vertex_count(self):   return len(self.vertices)
+    @property
+    def face_count(self):     return len(self.faces)
+
+    def __repr__(self):
+        return f"<_DFFGeometryAdapter {self.name} {self.vertex_count}v {self.face_count}f>"
+
+
 class COL3DViewport(QWidget): #vers 2
     """COL preview viewport.
     Left-drag = pan, Right-drag = free rotate, Scroll = zoom, Middle = pan.
@@ -4417,8 +4456,8 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
 
         self.collision_list.setColumnCount(8)
         self.collision_list.setHorizontalHeaderLabels([
-            "Model Name", "Type", "Version", "Size",
-            "Spheres", "Boxes", "Vertices", "Faces"])
+            "Name", "Format", "RW Version", "Size",
+            "Verts", "Tris", "Materials", "UV Layers"])
         self.collision_list.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows)
         self.collision_list.setSelectionMode(
@@ -6030,34 +6069,112 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
                              f"{model.geometry_count} geometries, "
                              f"{model.frame_count} frames, "
                              f"{model.atomic_count} atomics")
-            # Show first geometry in viewport if available
-            if model.geometries:
-                self._display_dff_model(model)
+            # Populate mesh list + viewport
+            self._display_dff_model(model)
+            # Populate detail table with geometry info
+            self._populate_dff_detail_table(model)
         except Exception as e:
             import traceback; traceback.print_exc()
             QMessageBox.critical(self, "DFF Error", f"Failed to open DFF:\n{e}")
 
-    def _display_dff_model(self, model): #vers 1
-        """Populate the workshop UI with a loaded DFF model.
-        Fills the collision list with geometry entries (mesh list).
-        Future: show geometry in 3D viewport."""
+    def _populate_dff_detail_table(self, model): #vers 1
+        """Fill the detail table (collision_list) with DFF geometry info."""
         try:
-            from apps.methods.dff_classes import DFFModel
-            if not hasattr(self, 'col_compact_list'):
-                return
-            self.col_compact_list.clear()
+            tbl = self.collision_list
+            tbl.setRowCount(0)
             for i, geom in enumerate(model.geometries):
                 atomic = next((a for a in model.atomics if a.geometry_index == i), None)
                 frame_name = model.get_frame_name(atomic.frame_index) if atomic else f"geom_{i}"
+                row = tbl.rowCount(); tbl.insertRow(row)
+                tbl.setItem(row, 0, self._tbl_item(frame_name))
+                # Determine pixel storage mode from depth (from adapter knowledge)
+                fmt = "PSMT8" if not geom.normals and not geom.colors else "Mesh"
+                tbl.setItem(row, 1, self._tbl_item("DFF Geometry"))
+                rw_ver = f"0x{model.rw_version:08X}" if model.rw_version else "—"
+                tbl.setItem(row, 2, self._tbl_item(rw_ver))
+                est_size = geom.vertex_count * 12 + geom.triangle_count * 8
+                tbl.setItem(row, 3, self._tbl_item(f"{est_size // 1024:.1f} KB"))
+                tbl.setItem(row, 4, self._tbl_item(str(geom.vertex_count)))
+                tbl.setItem(row, 5, self._tbl_item(str(geom.triangle_count)))
+                tbl.setItem(row, 6, self._tbl_item(str(geom.material_count)))
+                tbl.setItem(row, 7, self._tbl_item(str(len(geom.uv_layers))))
+            tbl.resizeColumnsToContents()
+        except Exception as e:
+            print(f"DFF detail table error: {e}")
+
+    def _tbl_item(self, text: str): #vers 1
+        """Helper: create a non-editable QTableWidgetItem."""
+        from PyQt6.QtWidgets import QTableWidgetItem
+        from PyQt6.QtCore import Qt
+        item = QTableWidgetItem(str(text))
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        return item
+
+    def _display_dff_model(self, model): #vers 2
+        """Populate the workshop UI with a loaded DFF model.
+        Fills the mesh list and shows the first geometry in the 3D viewport."""
+        try:
+            if not hasattr(self, 'col_compact_list'):
+                return
+
+            self.col_compact_list.clear()
+            self._dff_adapters = []   # keep adapters alive
+
+            for i, geom in enumerate(model.geometries):
+                atomic = next((a for a in model.atomics if a.geometry_index == i), None)
+                frame_name = model.get_frame_name(atomic.frame_index) if atomic else f"geom_{i}"
+                adapter = _DFFGeometryAdapter(geom, i)
+                self._dff_adapters.append(adapter)
                 label = (f"[{i}]  {frame_name}  "
                          f"({geom.vertex_count}v / {geom.triangle_count}t / "
                          f"{geom.material_count}mat)")
                 from PyQt6.QtWidgets import QListWidgetItem
-                self.col_compact_list.addItem(QListWidgetItem(label))
+                item = QListWidgetItem(label)
+                from PyQt6.QtCore import Qt
+                item.setData(Qt.ItemDataRole.UserRole, i)  # store geometry index
+                self.col_compact_list.addItem(item)
+
+            # Show first geometry in viewport
+            if self._dff_adapters:
+                self._show_dff_geometry(0)
+
+            # Connect selection → viewport update (once)
+            try:
+                self.col_compact_list.currentRowChanged.disconnect(self._on_dff_geom_selected)
+            except Exception:
+                pass
+            self.col_compact_list.currentRowChanged.connect(self._on_dff_geom_selected)
+
             if self.col_compact_list.count() > 0:
                 self.col_compact_list.setCurrentRow(0)
+
         except Exception as e:
+            import traceback; traceback.print_exc()
             print(f"DFF display error: {e}")
+
+    def _on_dff_geom_selected(self, row: int): #vers 1
+        """Called when user selects a geometry in the mesh list."""
+        self._show_dff_geometry(row)
+
+    def _show_dff_geometry(self, index: int): #vers 1
+        """Push a DFF geometry adapter into the 3D viewport."""
+        adapters = getattr(self, '_dff_adapters', [])
+        if not adapters or index < 0 or index >= len(adapters):
+            return
+        adapter = adapters[index]
+        # Push to the viewport — the COL3DViewport is stored as self.preview_widget
+        pw = getattr(self, 'preview_widget', None)
+        if pw and isinstance(pw, COL3DViewport):
+            pw.set_current_model(adapter, index)
+        # Also update the detail panel if present
+        model = getattr(self, '_current_dff_model', None)
+        if model and index < len(model.geometries):
+            geom = model.geometries[index]
+            self._set_status(
+                f"Geometry [{index}]: {geom.vertex_count} vertices, "
+                f"{geom.triangle_count} triangles, "
+                f"{geom.material_count} materials"
+            )
 
 
 
