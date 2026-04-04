@@ -3997,22 +3997,6 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.close_btn.setToolTip("Close Window") # closes tab
         layout.addWidget(self.close_btn)
 
-        # ── DFF View presets ──────────────────────────────────────────────
-        layout.addWidget(self._make_separator() if hasattr(self, '_make_separator')
-                         else QFrame())
-        for v_label, v_yaw, v_pitch in [("XY", 0, 0), ("XZ", 0, 90),
-                                         ("YZ", 90, 0), ("Iso", 30, 20)]:
-            vb = QPushButton(v_label)
-            vb.setFont(self.button_font)
-            vb.setFixedWidth(36)
-            vb.setToolTip(f"View preset: {v_label}")
-            def _set_v(checked=False, y=v_yaw, p=v_pitch):
-                pw = getattr(self, 'preview_widget', None)
-                if pw and isinstance(pw, COL3DViewport):
-                    pw._yaw = y; pw._pitch = p; pw.update()
-            vb.clicked.connect(_set_v)
-            layout.addWidget(vb)
-
         return self.toolbar
 
     #Left side vertical panel
@@ -4197,6 +4181,30 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
         self.build_from_txd_btn.setToolTip("Create col surface from txd texture names")
         self.build_from_txd_btn.clicked.connect(self._build_col_from_txd)
         layout.addWidget(self.build_from_txd_btn)
+
+        layout.addSpacing(8)
+
+        # ── DFF View presets (in left panel) ──────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #3a3a5a;")
+        layout.addWidget(sep)
+        layout.addSpacing(4)
+
+        for v_label, v_yaw, v_pitch in [("XY", 0, 0), ("XZ", 0, 90),
+                                         ("YZ", 90, 0), ("Iso", 30, 20)]:
+            vb = QPushButton(v_label)
+            vb.setFont(self.button_font)
+            vb.setFixedHeight(btn_height)
+            vb.setMinimumWidth(btn_width)
+            vb.setToolTip(f"View preset: {v_label}")
+            def _set_v(checked=False, y=v_yaw, p=v_pitch):
+                pw = getattr(self, 'preview_widget', None)
+                if pw and isinstance(pw, COL3DViewport):
+                    pw._yaw = y; pw._pitch = p; pw.update()
+            vb.clicked.connect(_set_v)
+            layout.addWidget(vb)
+            layout.addSpacing(spacer)
 
         layout.addStretch()
         return self.transform_icon_panel
@@ -4811,18 +4819,15 @@ class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
             self.icon_factory.color_picker_icon, self._open_render_settings_dialog)
 
         lay.addSpacing(6)
-        self.view_spheres_btn = btn("Toggle Spheres", self.icon_factory.sphere_icon,
-                                    lambda checked: pw.set_show_spheres(checked),
-                                    checkable=True, checked=True)
-        self.view_boxes_btn   = btn("Toggle Boxes",   self.icon_factory.box_icon,
-                                    lambda checked: pw.set_show_boxes(checked),
-                                    checkable=True, checked=True)
+        # DFF-relevant display toggles
         self.view_mesh_btn    = btn("Toggle Mesh",    self.icon_factory.mesh_icon,
                                     lambda checked: pw.set_show_mesh(checked),
                                     checkable=True, checked=True)
-        self.backface_btn     = btn("Toggle Backface",self.icon_factory.backface_icon,
+        self.backface_btn     = btn("Toggle Backface", self.icon_factory.backface_icon,
                                     lambda checked: pw.set_backface(checked),
                                     checkable=True, checked=False)
+        btn("Cycle Render Style",  self.icon_factory.color_picker_icon,
+            self._cycle_view_render_style)
 
         lay.addStretch()
         return f
