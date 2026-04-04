@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-#this belongs in apps/components/Model_Editor/model_workshop.py - Version: 2
+#this belongs in apps/components/Mdl_Editor/model_workshop.py - Version: 1
+# X-Seti - Apr 2026 - Model Workshop (based on COL Workshop)
 # X-Seti - April 4 2025 - Model editor
 
 import os
@@ -914,9 +915,9 @@ class COL3DViewport(QWidget): #vers 2
             from PyQt6.QtCore import QRect
             mat_id = self._paint_material
             # Use cached list if available, else fall back to direct lookup
-            _mat_cache = getattr(self._find_workshop(), '_paint_mat_list', [])
-            if self._find_workshop() else []
-                _mat_entry = next((m for m in _mat_cache if m[0] == mat_id), None)
+            _ws = self._find_workshop()
+            _mat_cache = getattr(_ws, '_paint_mat_list', []) if _ws else []
+            _mat_entry = next((m for m in _mat_cache if m[0] == mat_id), None)
             if _mat_entry:
                 _, mat_name, hex_col = _mat_entry
             else:
@@ -1346,7 +1347,7 @@ class _ColListDelegate(QStyledItemDelegate): #vers 1
             Qt.TextFlag.TextWordWrap | Qt.AlignmentFlag.AlignTop, text)
         return QSize(w, max(72, r.height() + 12))
 
-class COLWorkshop(QWidget): #vers 3
+class ModelWorkshop(QWidget): #vers 1  # renamed from COLWorkshop
     """COL Workshop - Main window"""
 
     workshop_closed = pyqtSignal()
@@ -5986,21 +5987,77 @@ class COLWorkshop(QWidget): #vers 3
 #------ Col functions
 
     def _open_file(self): #vers 1
-        """Open file dialog and load COL file"""
+        """Open file dialog — supports DFF (model) and COL (collision) files."""
         try:
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
-                "Open COL File",
+                "Open Model / Collision File",
                 "",
-                "COL Files (*.col);;All Files (*)"
+                "Model/Collision Files (*.dff *.col);;DFF Models (*.dff);;COL Files (*.col);;All Files (*)"
             )
-
-            if file_path:
+            if not file_path:
+                return
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext == '.dff':
+                self.open_dff_file(file_path)
+            else:
                 self.open_col_file(file_path)
-
         except Exception as e:
             print(f"Error in open file dialog: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to open file:\n{str(e)}")
+
+    def open_dff_file(self, file_path: str): #vers 1
+        """Open and display a GTA DFF model file."""
+        try:
+            from apps.methods.dff_parser import load_dff, detect_dff
+            with open(file_path, 'rb') as f:
+                data = f.read()
+            if not detect_dff(data):
+                QMessageBox.warning(self, "Invalid DFF",
+                    "File does not appear to be a valid RenderWare DFF model.")
+                return
+            model = load_dff(file_path)
+            if model is None:
+                QMessageBox.warning(self, "DFF Error", "Failed to parse DFF file.")
+                return
+            self._current_dff_path = file_path
+            self._current_dff_model = model
+            name = os.path.basename(file_path)
+            self.setWindowTitle(f"{App_name}: {name} "
+                                f"[{model.geometry_count} geometries, "
+                                f"{model.frame_count} frames]")
+            self._set_status(f"Opened DFF: {name}  — "
+                             f"{model.geometry_count} geometries, "
+                             f"{model.frame_count} frames, "
+                             f"{model.atomic_count} atomics")
+            # Show first geometry in viewport if available
+            if model.geometries:
+                self._display_dff_model(model)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            QMessageBox.critical(self, "DFF Error", f"Failed to open DFF:\n{e}")
+
+    def _display_dff_model(self, model): #vers 1
+        """Populate the workshop UI with a loaded DFF model.
+        Fills the collision list with geometry entries (mesh list).
+        Future: show geometry in 3D viewport."""
+        try:
+            from apps.methods.dff_classes import DFFModel
+            if not hasattr(self, 'col_compact_list'):
+                return
+            self.col_compact_list.clear()
+            for i, geom in enumerate(model.geometries):
+                atomic = next((a for a in model.atomics if a.geometry_index == i), None)
+                frame_name = model.get_frame_name(atomic.frame_index) if atomic else f"geom_{i}"
+                label = (f"[{i}]  {frame_name}  "
+                         f"({geom.vertex_count}v / {geom.triangle_count}t / "
+                         f"{geom.material_count}mat)")
+                from PyQt6.QtWidgets import QListWidgetItem
+                self.col_compact_list.addItem(QListWidgetItem(label))
+            if self.col_compact_list.count() > 0:
+                self.col_compact_list.setCurrentRow(0)
+        except Exception as e:
+            print(f"DFF display error: {e}")
 
 
 
@@ -9346,6 +9403,10 @@ import shutil
 import sys
 
 
+def open_model_workshop(main_window, dff_path=None): #vers 1
+    """Open Model Workshop — mirrors open_col_workshop pattern."""
+    return open_workshop(main_window, dff_path)
+
 def open_workshop(main_window, img_path=None): #vers 3
     """Open Workshop from main window - works with or without IMG"""
     try:
@@ -9372,7 +9433,9 @@ def open_workshop(main_window, img_path=None): #vers 3
 
 
 # Compatibility alias for imports
-COLEditorDialog = COLWorkshop  #vers 1
+COLEditorDialog = COLWorkshop
+ModelWorkshop = COLWorkshop
+ModelWorkshopDialog = COLWorkshop  #vers 1
 
 
 def open_col_workshop(main_window, img_path=None): #vers 2
