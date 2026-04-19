@@ -4150,14 +4150,15 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self.open_dff_btn = QPushButton()
         self.open_dff_btn.setFont(self.button_font)
         self.open_dff_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
-        self.open_dff_btn.setText("DFF")
+        self.open_dff_btn.setText("DFF/ TXD")
         self.open_dff_btn.setIconSize(QSize(20, 20))
         self.open_dff_btn.setToolTip("Open a DFF model file directly (Ctrl+D)")
         self.open_dff_btn.setShortcut("Ctrl+D")
         self.open_dff_btn.clicked.connect(self._open_dff_standalone)
         layout.addWidget(self.open_dff_btn)
 
-        # Open TXD (standalone — opens TXD Workshop)
+        #TODO; this should be combined with load DFF, this way we can highlight a dff and txd togeher to load, and show textured models.
+        """
         self.open_txd_btn = QPushButton()
         self.open_txd_btn.setFont(self.button_font)
         self.open_txd_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
@@ -4167,6 +4168,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self.open_txd_btn.setShortcut("Ctrl+T")
         self.open_txd_btn.clicked.connect(self._open_txd_standalone)
         layout.addWidget(self.open_txd_btn)
+        """
 
         # Save button
         self.save_btn = QPushButton()
@@ -4196,19 +4198,28 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self.saveall_btn.clicked.connect(self._saveall_file)
         #layout.addWidget(self.saveall_btn)
 
-        self.export_all_btn = QPushButton("Extract")
-        self.export_all_btn.setFont(self.button_font)
-        self.export_all_btn.setIcon(self.icon_factory.package_icon(color=icon_color))
-        self.export_all_btn.setIconSize(QSize(20, 20))
-        self.export_all_btn.setToolTip("Export geometries as OBJ, COL, or other formats")
-        self.export_all_btn.clicked.connect(self.export_all)
-        self.export_all_btn.setEnabled(True)
-        layout.addWidget(self.export_all_btn)
+        self.export_ojs_btn = QPushButton("Ojs/ Col")
+        self.export_ojs_btn.setFont(self.button_font)
+        self.export_ojs_btn.setIcon(self.icon_factory.package_icon(color=icon_color))
+        self.export_ojs_btn.setIconSize(QSize(20, 20))
+        self.export_ojs_btn.setToolTip("Export geometries as OBJ, COL, or other formats")
+        self.export_ojs_btn.clicked.connect(self.export_all)
+        self.export_ojs_btn.setEnabled(True)
+        layout.addWidget(self.export_ojs_btn)
+
+        self.export_tex_btn = QPushButton("Extract Tex")
+        self.export_tex_btn.setFont(self.button_font)
+        self.export_tex_btn.setIcon(self.icon_factory.package_icon(color=icon_color))
+        self.export_tex_btn.setIconSize(QSize(20, 20))
+        self.export_tex_btn.setToolTip("Export textures as png, tga, dss or other formats")
+        self.export_tex_btn.clicked.connect(self.export_all)
+        self.export_tex_btn.setEnabled(True)
+        layout.addWidget(self.export_tex_btn)
 
         self.undo_btn = QPushButton()
         self.undo_btn.setFont(self.button_font)
         self.undo_btn.setIcon(self.icon_factory.undo_icon(color=icon_color))
-        self.undo_btn.setText("Undo")
+        self.undo_btn.setText("")
         self.undo_btn.setIconSize(QSize(20, 20))
         self.undo_btn.clicked.connect(self._undo_last_action)
         self.undo_btn.setEnabled(True)
@@ -4259,7 +4270,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             self.tearoff_btn.setMaximumWidth(40)
             self.tearoff_btn.setMinimumHeight(30)
             self.tearoff_btn.clicked.connect(self._toggle_tearoff)
-            self.tearoff_btn.setToolTip("TXD Workshop - Tearoff window")
+            self.tearoff_btn.setToolTip(App_name + " Workshop - Tearoff window")
 
             layout.addWidget(self.tearoff_btn)
 
@@ -10992,33 +11003,51 @@ import shutil
 import sys
 
 
-def open_model_workshop(main_window, dff_path=None): #vers 1
-    """Open Model Workshop — mirrors open_col_workshop pattern."""
-    return open_workshop(main_window, dff_path)
-
-def open_workshop(main_window, img_path=None): #vers 3
-    """Open Workshop from main window - works with or without IMG"""
+def open_model_workshop(main_window, dff_path=None): #vers 2
+    """Open Model Workshop — routes DFF/COL/IMG correctly."""
     try:
-        workshop = ModelWorkshop(main_window, main_window)
-
-        if img_path:
-            # Check if it's a col file or IMG file
-            if img_path.lower().endswith('.col'):
-                # Load standalone col file
-                workshop.open_col_file(img_path)
-            else:
-                # Load from IMG archive
-                workshop.load_from_img_archive(img_path)
+        # Try to dock in main window tab if available
+        if main_window and hasattr(main_window, 'main_tab_widget'):
+            tw = main_window.main_tab_widget
+            from PyQt6.QtWidgets import QWidget, QVBoxLayout
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            workshop = ModelWorkshop(main_window=main_window, parent=container)
+            layout.addWidget(workshop)
+            idx = tw.addTab(container, "Model Workshop")
+            tw.setCurrentIndex(idx)
         else:
-            # Open in standalone mode (no IMG loaded)
-            if main_window and hasattr(main_window, 'log_message'):
-                main_window.log_message(App_name + " opened in standalone mode")
+            # Standalone window
+            workshop = ModelWorkshop(main_window=main_window)
+            workshop.setWindowFlags(Qt.WindowType.Window)
+            workshop.setWindowTitle(f"Model Workshop — {App_name}")
+            workshop.resize(1200, 800)
+            workshop.show()
 
-        workshop.show()
+        # Route the file
+        if dff_path:
+            ext = dff_path.lower()
+            if ext.endswith('.dff'):
+                workshop.open_dff_file(dff_path)
+            elif ext.endswith('.col'):
+                workshop.open_col_file(dff_path)
+            elif ext.endswith('.img'):
+                workshop.load_from_img_archive(dff_path)
+        else:
+            if main_window and hasattr(main_window, 'log_message'):
+                main_window.log_message("Model Workshop opened")
+
         return workshop
     except Exception as e:
-        QMessageBox.critical(main_window, App_name * " Error", f"Failed to open: {str(e)}")
+        import traceback; traceback.print_exc()
+        if main_window and hasattr(main_window, 'log_message'):
+            main_window.log_message(f"Model Workshop error: {e}")
         return None
+
+def open_workshop(main_window, img_path=None): #vers 4
+    """Legacy wrapper — calls open_model_workshop."""
+    return open_model_workshop(main_window, img_path)
 
 
 def open_col_workshop(main_window, img_path=None): #vers 2
