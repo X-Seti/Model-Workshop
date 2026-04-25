@@ -1648,7 +1648,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
     def get_menu_title(self) -> str: #vers 1
         """Return menu label for imgfactory menu bar."""
-        return "Model Workshop"
+        return "DFF"
 
     def _build_menus_into_qmenu(self, parent_menu): #vers 1
         """Populate parent_menu with Model Workshop actions."""
@@ -2102,16 +2102,18 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         grid_hdr.addWidget(density_lbl)
         _n_cols = [3]
 
-        for nc in (3, 4, 5, 6):  # icons: grid_icon available from SVGIconFactory
+        _col_btns = []
+        for nc in (3, 4, 5, 6):
             b = QPushButton(str(nc))
             b.setFixedSize(24, 20)
             b.setFont(self.panel_font)
             b.setCheckable(True)
             b.setChecked(nc == _n_cols[0])
-
-            def _set_cols(checked, n=nc, btn=b):
+            _col_btns.append(b)
+            def _set_cols(checked, n=nc, all_b=_col_btns):
                 if not checked: return
                 _n_cols[0] = n
+                for ob in all_b: ob.setChecked(ob.text() == str(n))
                 _rebuild_grid()
             b.toggled.connect(_set_cols)
             grid_hdr.addWidget(b)
@@ -2124,6 +2126,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         grid_container = [None]
         left_lay.addWidget(scroll, 1)
+        N_ROWS = 6           # grid is always N_ROWS rows; extras = empty placeholder spheres
         _selected_row = [0]
         _slot_btns    = []
 
@@ -2132,27 +2135,68 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             return sizes.get(n_cols, (72,86))
 
         def _rebuild_grid():
-            nc = _n_cols[0]
+            nc   = _n_cols[0]
+            total = nc * N_ROWS          # always nc columns × 6 rows
             sw, sh = _get_slot_size(nc)
-            old_w = grid_container[0]
+            pix_w  = sw - 8
+
             new_w = QWidget()
             gl    = QGridLayout(new_w)
             gl.setSpacing(3)
             gl.setContentsMargins(3,3,3,3)
-            # Reparent slots to new_w BEFORE replacing scroll widget to prevent deletion
 
+            # Reparent real slots first
             for s, _ in _slot_btns:
                 s.setParent(new_w)
             scroll.setWidget(new_w)
             grid_container[0] = new_w
 
-            for i,(gi,mi,mat,geom) in enumerate(all_mats):
+            # Place real material slots
+            for i, (gi, mi, mat, geom) in enumerate(all_mats):
+                if i >= total: break
                 slot, pix_lbl = _slot_btns[i]
                 slot.setFixedSize(sw, sh)
-                pix_w = sw - 8
                 pix_lbl.setFixedSize(pix_w, pix_w)
                 pix_lbl.setPixmap(_make_slot_pix(mat, geom, pix_w))
-                gl.addWidget(slot, i//nc, i%nc)
+                slot.setVisible(True)
+                gl.addWidget(slot, i // nc, i % nc)
+
+            # Fill remaining cells with empty placeholder slots
+            for j in range(len(all_mats), total):
+                row, col = j // nc, j % nc
+                empty = QFrame()
+                empty.setFixedSize(sw, sh)
+                empty.setStyleSheet(
+                    "QFrame { border: 1px dashed palette(mid); border-radius: 4px; "
+                    "background: palette(base); }")
+                # Grey sphere placeholder
+                ph = QLabel()
+                ph.setFixedSize(pix_w, pix_w)
+                ph.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+                ph_pix = QPixmap(pix_w, pix_w)
+                ph_pix.fill(_Qt.GlobalColor.transparent)
+                _pp = QPainter(ph_pix)
+                _pp.setRenderHint(QPainter.RenderHint.Antialiasing)
+                from PyQt6.QtGui import QRadialGradient as _RG
+                cx, cy, r = pix_w//2, pix_w//2, pix_w//2 - 3
+                _g = _RG(cx, cy, r)
+                _g.setColorAt(0, QColor(80,80,90,60))
+                _g.setColorAt(1, QColor(40,40,50,40))
+                from PyQt6.QtGui import QBrush as _QB
+                _pp.setBrush(_QB(_g)); _pp.setPen(_Qt.PenStyle.NoPen)
+                _pp.drawEllipse(cx-r, cy-r, 2*r, 2*r)
+                _pp.end()
+                ph.setPixmap(ph_pix)
+                el = QVBoxLayout(empty)
+                el.setContentsMargins(4,4,4,4); el.setSpacing(2)
+                el.addWidget(ph, 0, _Qt.AlignmentFlag.AlignCenter)
+                sl = QLabel(f"{j+1}")
+                sl.setFont(QFont("Arial", 6))
+                sl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+                sl.setStyleSheet("color: palette(placeholderText);")
+                el.addWidget(sl)
+                gl.addWidget(empty, row, col)
+
             gl.setColumnStretch(nc, 1)
 
         SLOT_W, SLOT_H = 88, 104
@@ -2498,22 +2542,26 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         form.addRow("Textures:", io_row)
         pw = getattr(self, 'preview_widget', None)
         prev_row = QHBoxLayout(); prev_row.setSpacing(3)
-        _prev_icons = {'solid':'solid_icon','textured':'texture_icon', 'semi':'semi_icon','wire':'wireframe_icon'}  # use existing icons; replace when dedicated ones added
-
-        for style,label in [('solid','Solid'),('textured','Texture'),('semi','Semi'),('wire','Wire')]:
+        _prev_icons = {'solid':'solid_icon','textured':'texture_icon',
+                        'semi':'semi_icon','wire':'wireframe_icon'}
+        _prev_btns = []
+        for style, label in [('solid','Solid'),('textured','Texture'),
+                              ('semi','Semi'),('wire','Wire')]:
             b = QPushButton(label)
             b.setFixedHeight(26)
-            b.setMinimumWidth(52); b.setMaximumWidth(90)
-            b.setToolTip(f"{label} mode")
+            b.setMinimumWidth(26); b.setMaximumWidth(80)
+            b.setToolTip(f"{label} render mode")
             try:
                 ico_fn = _prev_icons.get(style)
-                if ico_fn: b.setIcon(getattr(self.icon_factory,ico_fn)(color=ic)); b.setIconSize(_QS(14,14))
-
-            except Exception: pass
-
-            if pw: b.clicked.connect(lambda _=False,s=style,p=pw: p.set_render_style(s))
+                if ico_fn:
+                    b.setIcon(getattr(self.icon_factory, ico_fn)(color=ic))
+                    b.setIconSize(_QS(16, 16))
+            except Exception:
+                pass
+            if pw:
+                b.clicked.connect(lambda _=False, s=style, p=pw: p.set_render_style(s))
             prev_row.addWidget(b)
-
+            _prev_btns.append((b, label))
         prev_row.addStretch()
         form.addRow("Preview:", prev_row)
         right_lay.addLayout(form)
@@ -5063,6 +5111,13 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         except Exception:
             pass
         self.window_closed.emit()
+        # Remove injected tool menu from imgfactory menubar
+        try:
+            mw = getattr(self, 'main_window', None) or getattr(self, '_imgfactory', None)
+            if mw and hasattr(mw, '_update_tool_menu_for_tab'):
+                mw._update_tool_menu_for_tab(None)
+        except Exception:
+            pass
         event.accept()
 
 
@@ -5070,6 +5125,18 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
     def _create_toolbar(self): #vers 13
         """Create toolbar - Hide drag button when docked, ensure buttons visible"""
+        # Read sizes from app_settings so they match Global App System Settings
+        try:
+            from apps.utils.app_settings_system import get_titlebar_sizes as _gts
+            _as = getattr(self, 'app_settings', None) or getattr(
+                  getattr(self, 'main_window', None), 'app_settings', None)
+            _sz = _gts(_as)
+            _TB_H    = _sz['tb_height']
+            _BTN_SZ  = _sz['btn_size']
+            _ICO_SZ  = _sz['icon_size']
+            _BTN_H   = _sz['btn_height']
+        except Exception:
+            _TB_H, _BTN_SZ, _ICO_SZ, _BTN_H = 32, 32, 20, 24
         self.titlebar = QFrame()
         self.titlebar.setFrameStyle(QFrame.Shape.StyledPanel)
         self.titlebar.setFixedHeight(45)
@@ -5089,7 +5156,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
         self.toolbar = QFrame()
         self.toolbar.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.toolbar.setMaximumHeight(50)
+        self.toolbar.setMaximumHeight(_TB_H + 10)
 
         layout = QHBoxLayout(self.toolbar)
         layout.setContentsMargins(5, 5, 5, 5)
@@ -5100,7 +5167,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self.settings_btn.setFont(self.button_font)
         self.settings_btn.setIcon(self.icon_factory.settings_icon(color=icon_color))
         self.settings_btn.setText("Settings")
-        self.settings_btn.setIconSize(QSize(20, 20))
+        self.settings_btn.setIconSize(QSize(_ICO_SZ, _ICO_SZ))
         self.settings_btn.clicked.connect(self._show_workshop_settings)
         self.settings_btn.setToolTip("Workshop Settings")
         layout.addWidget(self.settings_btn)
@@ -5121,7 +5188,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             self.open_img_btn = QPushButton("OpenIMG")
             self.open_img_btn.setFont(self.button_font)
             self.open_img_btn.setIcon(self.icon_factory.folder_icon(color=icon_color))
-            self.open_img_btn.setIconSize(QSize(20, 20))
+            self.open_img_btn.setIconSize(QSize(_ICO_SZ, _ICO_SZ))
             self.open_img_btn.clicked.connect(self.open_img_archive)
             self.open_img_btn.setToolTip("Open an IMG archive and browse its DFF/COL entries")
             layout.addWidget(self.open_img_btn)
@@ -5130,7 +5197,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             self.from_img_btn = QPushButton("From IMG")
             self.from_img_btn.setFont(self.button_font)
             self.from_img_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
-            self.from_img_btn.setIconSize(QSize(20, 20))
+            self.from_img_btn.setIconSize(QSize(_ICO_SZ, _ICO_SZ))
             self.from_img_btn.clicked.connect(self._pick_col_from_current_img)
             self.from_img_btn.setToolTip("Pick a DFF/COL entry from the currently loaded IMG")
             layout.addWidget(self.from_img_btn)
@@ -8513,12 +8580,18 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         menu.exec(self.mapToGlobal(pos))
 
 
-    def _get_icon_color(self): #vers 2
-        """Get icon colour from current theme — returns text_primary."""
-        if APPSETTINGS_AVAILABLE and self.app_settings:
-            colors = self.app_settings.get_theme_colors()
-            return colors.get('text_primary', '#000000')
-        return '#000000'
+    def _get_icon_color(self): #vers 3
+        """Get icon colour from current theme — returns text_primary.
+        Falls back to main_window app_settings if own settings not loaded."""
+        as_ = (self.app_settings
+               or getattr(getattr(self, 'main_window', None), 'app_settings', None))
+        if as_:
+            try:
+                colors = as_.get_theme_colors() or {}
+                return colors.get('text_primary', '#cccccc')
+            except Exception:
+                pass
+        return '#cccccc'
 
 
     def _apply_fonts_to_widgets(self): #vers 1
@@ -8569,6 +8642,12 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
                 ss = app_settings.get_stylesheet()
                 if ss:
                     QApplication.instance().setStyleSheet(ss)
+                    # Apply panel effects (fill/gradient/pattern) if configured
+            try:
+                from apps.utils.app_settings_system import apply_panel_effects
+                apply_panel_effects(self, app_settings)
+            except Exception:
+                pass
             # Clear any widget-level override so we inherit from QApplication
             self.setStyleSheet("")
         except Exception as e:
