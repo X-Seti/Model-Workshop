@@ -1756,7 +1756,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self.zoom_level = 1.0
         self.pan_offset = QPoint(0, 0)
         _win = self.palette().color(self.palette().ColorRole.Window)
-        self.background_color = self._get_ui_color('viewport_bg')
+        #self.background_color = self._get_ui_color('viewport_bg') #TODO: This crashes the app
         self.background_mode = 'solid'
         self.placeholder_text = "No Surface"
         self.setMinimumSize(200, 200)
