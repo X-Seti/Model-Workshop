@@ -48,14 +48,14 @@ from PyQt6.QtSvg import QSvgRenderer
 from apps.methods.imgfactory_svg_icons import SVGIconFactory
 
 # COL Workshop parser system
-from apps.methods.col_workshop_classes import (
+from apps.components.Model_Editor.depends.col_workshop_classes import (
     COLModel, COLVersion, COLHeader, COLBounds,
     COLSphere, COLBox, COLVertex, COLFace
 )
 
-from apps.methods.col_workshop_structures import setup_col_table_structure, populate_col_table
-from apps.methods.col_workshop_parser import COLParser
-from apps.methods.col_workshop_loader import COLFile
+from apps.components.Model_Editor.depends.col_workshop_structures import setup_col_table_structure, populate_col_table
+from apps.components.Model_Editor.depends.col_workshop_parser import COLParser
+from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
 from apps.gui.tool_menu_mixin import ToolMenuMixin
 
 # Temporary 3D viewport placeholder
@@ -941,7 +941,7 @@ class COL3DViewport(QWidget): #vers 2
                 return self._get_ui_color('viewport_text')
         else:
             try:
-                from apps.methods.col_materials import get_material_qcolor, COLGame
+                from apps.components.Model_Editor.depends.col_materials import get_material_qcolor, COLGame
                 _game = COLGame.VC if getattr(getattr(model,'version',None),'value',3)==1 else COLGame.SA
                 def mat_col(mat_id):
                     c = get_material_qcolor(mat_id, _game)
@@ -1245,7 +1245,7 @@ class COL3DViewport(QWidget): #vers 2
             if _mat_entry:
                 _, mat_name, hex_col = _mat_entry
             else:
-                from apps.methods.col_materials import get_material_name, get_material_colour, COLGame
+                from apps.components.Model_Editor.depends.col_materials import get_material_name, get_material_colour, COLGame
                 mat_name = get_material_name(mat_id, COLGame.SA)
                 hex_col  = get_material_colour(mat_id, COLGame.SA)
             mc = QColor(f"#{hex_col}")
@@ -1430,7 +1430,7 @@ class COL3DViewport(QWidget): #vers 2
         mat_id = mat.material_id if hasattr(mat, 'material_id') else int(mat)
 
         try:
-            from apps.methods.col_materials import (
+            from apps.components.Model_Editor.depends.col_materials import (
                 get_material_name, get_material_colour, COLGame)
             model = self._model
             ver = getattr(getattr(model, 'version', None), 'value', 3) if model else 3
@@ -1901,7 +1901,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         from PyQt6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "New Model", "Model name:")
         if not ok or not name.strip(): return
-        from apps.methods.col_workshop_classes import COLModel, COLHeader, COLVersion, COLBounds
+        from apps.components.Model_Editor.depends.col_workshop_classes import COLModel, COLHeader, COLVersion, COLBounds
         m = COLModel()
         m.name = name.strip(); m.version = COLVersion.COL_1
         if not self.current_col_file: return
@@ -2772,7 +2772,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
         # Cache the full material list for this model's version
         try:
-            from apps.methods.col_materials import get_materials_for_version, COLGame
+            from apps.components.Model_Editor.depends.col_materials import get_materials_for_version, COLGame
             ver     = getattr(getattr(model,'version',None),'value',3) if model else 3
             game    = COLGame.VC if ver == 1 else COLGame.SA
             self._paint_mat_list = get_materials_for_version(game, include_procedural=True)
@@ -2973,7 +2973,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
         # Populate material combo
         try:
-            from apps.methods.col_materials import get_materials_for_version, COLGame, get_material_colour
+            from apps.components.Model_Editor.depends.col_materials import get_materials_for_version, COLGame, get_material_colour
             ver = getattr(getattr(model, 'version', None), 'value', 3) if model else 3
             game = COLGame.VC if ver == 1 else COLGame.SA
             all_mats = get_materials_for_version(game, include_procedural=True)
@@ -3157,8 +3157,8 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "No File", "Load a COL file first.")
             return
-        from apps.methods.col_workshop_classes import COLModel, COLHeader, COLBounds, COLVersion
-        from apps.methods.col_core_classes import Vector3
+        from apps.components.Model_Editor.depends.col_workshop_classes import COLModel, COLHeader, COLBounds, COLVersion
+        from apps.components.Model_Editor.depends.col_core_classes import Vector3
         hdr = COLHeader(fourcc=b'COLL', size=0, name='new_model',
                         model_id=0, version=COLVersion.COL_1)
         bnd = COLBounds(radius=1.0, center=Vector3(0,0,0),
@@ -3186,8 +3186,8 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
     def _build_col_from_txd(self): #vers 2
         """Create stub COL models for each texture name in a loaded TXD."""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
-        from apps.methods.col_workshop_loader import COLFile
-        from apps.methods.col_workshop_classes import COLModel, COLVersion, COLBounds
+        from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
+        from apps.components.Model_Editor.depends.col_workshop_classes import COLModel, COLVersion, COLBounds
         txd_path, _ = QFileDialog.getOpenFileName(
             self, "Select TXD file", "", "TXD Files (*.txd);;All Files (*)")
         if not txd_path:
@@ -3212,7 +3212,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
                 QMessageBox.warning(self, "No Textures", "No texture names found in TXD.")
                 return
             if not self.current_col_file:
-                from apps.methods.col_workshop_loader import COLFile
+                from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
                 self.current_col_file = COLFile()
                 self.current_col_file.models = []
             added = 0
@@ -3398,8 +3398,8 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             return
 
         # - Build COL models
-        from apps.methods.col_workshop_loader import COLFile
-        from apps.methods.col_workshop_classes import (COLModel, COLVersion, COLBounds,
+        from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
+        from apps.components.Model_Editor.depends.col_workshop_classes import (COLModel, COLVersion, COLBounds,
                                                         COLFace, COLVertex, COLMaterial)
         import struct, os
 
@@ -3485,7 +3485,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
     def _convert_surface(self): #vers 2
         """Convert selected model to a different COL version."""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, QMessageBox
-        from apps.methods.col_workshop_classes import COLVersion
+        from apps.components.Model_Editor.depends.col_workshop_classes import COLVersion
         model = self._get_selected_model()
         if not model:
             QMessageBox.warning(self, "No Selection", "Select a collision model first.")
@@ -3549,7 +3549,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             QMessageBox.warning(self, "No Mesh", f"'{model.name}' has no vertex/face data.")
             return
         # Upgrade to COL3 if needed
-        from apps.methods.col_workshop_classes import COLVersion
+        from apps.components.Model_Editor.depends.col_workshop_classes import COLVersion
         if getattr(model.version, 'value', 0) < 3:
             reply = QMessageBox.question(self, "Upgrade to COL3",
                 "Shadow mesh requires COL3. Upgrade this model?",
@@ -8766,7 +8766,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             return
         # Build a minimal DFF geometry and add to current model or create new
         try:
-            from apps.methods.col_3d_viewport import SimpleVert, SimpleFace
+            from apps.components.Model_Editor.depends.col_3d_viewport import SimpleVert, SimpleFace
         except ImportError:
             SimpleVert = SimpleFace = None
         fname = os.path.basename(path)
@@ -11249,7 +11249,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         """Export only models referenced by an IDE file."""
         from PyQt6.QtWidgets import QMessageBox, QFileDialog
         import os
-        from apps.methods.col_workshop_writer import save_col_file
+        from apps.components.Model_Editor.depends.col_workshop_writer import save_col_file
 
         if not self.current_col_file:
             QMessageBox.warning(self, "No COL File", "Load a COL file first.")
@@ -11305,7 +11305,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         """Extract/export selected COL models (or all) to individual .col files."""
         import os
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
-        from apps.methods.col_workshop_writer import save_col_file
+        from apps.components.Model_Editor.depends.col_workshop_writer import save_col_file
 
         if not self.current_col_file:
             QMessageBox.warning(self, "Export", "No dff file loaded.")
@@ -11385,7 +11385,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             return
 
         try:
-            from apps.methods.col_workshop_parser import COLWriter
+            from apps.components.Model_Editor.depends.col_workshop_parser import COLWriter
             raw = COLWriter.write_file(models)
         except Exception as e:
             import traceback
@@ -11472,13 +11472,13 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         """Open standalone COL file - supports COL1, COL2, COL3"""
         self._dff_adapters = []   # clear DFF mode
         try:
-            from apps.methods.col_workshop_loader import COLFile
+            from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
 
             # Create and load COL file
             # col_file = COLFile()
             # col_file.load_from_file(file_path)
 
-            #from apps.methods.col_workshop_loader import load_col_with_progress
+            #from apps.components.Model_Editor.depends.col_workshop_loader import load_col_with_progress
             #col_file = load_col_with_progress(file_path, self)
 
             #if not col_file:  # Just check if None
@@ -11766,7 +11766,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
                 return
 
             # Import analysis functions
-            from apps.methods.col_operations import get_col_detailed_analysis
+            from apps.components.Model_Editor.depends.col_operations import get_col_detailed_analysis
             from gui.col_dialogs import show_col_analysis_dialog
 
             # Get detailed analysis
@@ -12631,7 +12631,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
                 return
 
             # Build a minimal COL file containing just this model
-            from apps.methods.col_workshop_loader import COLFile
+            from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
             out = COLFile()
             out.models = [model]
             if hasattr(out, 'save'):
@@ -12667,7 +12667,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             if not file_path:
                 return
 
-            from apps.methods.col_workshop_loader import COLFile
+            from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
             new_col = COLFile()
             if not new_col.load(file_path):
                 QMessageBox.warning(self, "Import Failed",
@@ -13949,7 +13949,7 @@ class COLEditorDialog(QDialog): #vers 3
             self.status_bar.showMessage("Analyzing COL file...")
 
             # Import locally when needed
-            from apps.methods.col_operations import get_col_detailed_analysis
+            from apps.components.Model_Editor.depends.col_operations import get_col_detailed_analysis
             from gui.col_dialogs import show_col_analysis_dialog
 
             self.status_bar.showMessage("Analyzing COL file...")
@@ -14289,7 +14289,7 @@ class COLEditorDialog(QDialog): #vers 3
         if not paths:
             return
 
-        from apps.methods.col_workshop_loader import COLFile
+        from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
         added = 0
         for path in paths:
             cf = COLFile()
@@ -14453,10 +14453,10 @@ def import_elements(model: COLModel, file_path: str) -> bool: #vers 1
                     p = line.split()
                     if not p: continue
                     if p[0] == 'v' and len(p) >= 4:
-                        from apps.methods.col_core_classes import COLVertex
+                        from apps.components.Model_Editor.depends.col_core_classes import COLVertex
                         verts.append(COLVertex(float(p[1]), float(p[2]), float(p[3])))
                     elif p[0] == 'f' and len(p) >= 4:
-                        from apps.methods.col_core_classes import COLFace
+                        from apps.components.Model_Editor.depends.col_core_classes import COLFace
                         # OBJ faces are 1-indexed
                         base = len(model.vertices) if hasattr(model,'vertices') else 0
                         ia = int(p[1].split('/')[0]) - 1
