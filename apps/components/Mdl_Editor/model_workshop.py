@@ -9089,7 +9089,7 @@ class COLEditorDialog(QDialog): #vers 3
         models_group = QGroupBox("Models")
         models_layout = QVBoxLayout(models_group)
 
-        self.model_list = COLModelListWidget()
+        self.model_list = ModelListWidget()
         models_layout.addWidget(self.model_list)
 
         left_panel.addWidget(models_group)
@@ -9727,7 +9727,7 @@ def import_elements(model: COLModel, file_path: str) -> bool: #vers 1
         return False
 
 
-def refresh_model_list(list_widget: COLModelListWidget, col_file: COLFile): #vers 1
+def refresh_model_list(list_widget: ModelListWidget, col_file: COLFile): #vers 1
     """Refresh model list widget"""
     try:
         list_widget.set_col_file(col_file)

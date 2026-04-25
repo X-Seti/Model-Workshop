@@ -8,7 +8,7 @@ Supports GTA III / VC / SA PC DFF format.
 
 import struct
 from typing import Optional, List
-from apps.methods.dff_classes import (
+from dff_classes import (
     DFFModel, Frame, Geometry, Atomic, Material, Triangle,
     Vector3, RGBA, TexCoord, BoundingSphere, RWChunkType
 )

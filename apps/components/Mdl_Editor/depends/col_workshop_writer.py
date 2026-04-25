@@ -14,7 +14,7 @@ Supports COL1 (GTA III/VC) and COL2/3/4 (SA).
 import struct
 from typing import List
 
-from apps.methods.col_workshop_classes import COLModel, COLVersion
+from col_workshop_classes import COLModel, COLVersion
 
 
 #    surface packing                                                           
