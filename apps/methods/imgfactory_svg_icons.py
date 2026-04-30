@@ -60,7 +60,6 @@ from PyQt6.QtCore import Qt
 # saveas_icon
 # screenshot_icon
 # search_icon
-# svg_edit_icon
 # settings_icon
 # sphere_icon
 # stop_icon
@@ -471,35 +470,6 @@ class SVGIconFactory: #vers 8
 # - ART & MANAGEMENT ICONS
 
     @staticmethod
-    @staticmethod
-    def svg_edit_icon(size: int = 20, color: str = None) -> QIcon: #vers 2
-        """SVG editor badge — [SvG] three-colour icon like [RGB].
-        S=orange, v=theme colour, G=blue. Uses geometric paths (no <text>)."""
-        # S shape (orange)  v shape (theme)  G shape (blue)
-        svg = (
-            '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'''
-            # Border badge
-            '''<rect x="0.5" y="3.5" width="23" height="17" rx="2.5"
-                 fill="none" stroke="currentColor" stroke-width="1.2"/>'''
-            # S — orange: top bar, mid bar, bottom bar + verticals
-            '''<rect x="2.5" y="5.5" width="4"  height="1.5" rx="0.5" fill="#ff6600"/>
-               <rect x="2.5" y="10"  width="4"  height="1.5" rx="0.5" fill="#ff6600"/>
-               <rect x="2.5" y="14.5" width="4" height="1.5" rx="0.5" fill="#ff6600"/>
-               <rect x="2.5" y="5.5" width="1.5" height="4.5" rx="0.5" fill="#ff6600"/>
-               <rect x="5"   y="11.5" width="1.5" height="4.5" rx="0.5" fill="#ff6600"/>'''
-            # v — theme colour: two diagonal lines meeting at bottom
-            '''<path d="M9.5 6.5 L11.5 14 L13.5 6.5"
-                 fill="none" stroke="currentColor" stroke-width="2"
-                 stroke-linecap="round" stroke-linejoin="round"/>'''
-            # G — blue: C shape + horizontal bar
-            '''<path d="M22 6.5 Q18 5 17.5 10.5 Q18 16 22 15"
-                 fill="none" stroke="#00aaff" stroke-width="2"
-                 stroke-linecap="round"/>
-               <rect x="19.5" y="10" width="2.5" height="1.5" rx="0.5" fill="#00aaff"/>'''
-            '''</svg>'''
-        )
-        return SVGIconFactory._create_icon(svg, size, color)
-
     def search_icon(size: int = 20, color: str = None) -> QIcon: #vers 7
         """Search/detect/magnifying glass icon"""
         svg_data = '''<svg viewBox="0 0 24 24">
@@ -1182,15 +1152,13 @@ class SVGIconFactory: #vers 8
 
 
     @staticmethod
-    def color_picker_icon(size: int = 20, color: str = None) -> QIcon: #vers 8
-        """Eyedropper / colour picker icon."""
-        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path d="M20.71 5.63l-2.34-2.34a1 1 0 0 0-1.41 0l-3.12 3.12-1.41-1.41
-                     -1.42 1.41 1.41 1.42-6.6 6.6A2 2 0 0 0 5 16v3h3
-                     a2 2 0 0 0 1.42-.59l6.6-6.6 1.41 1.42 1.42-1.42
-                     -1.42-1.41 3.12-3.12a1 1 0 0 0 0-1.65z"
-                  fill="currentColor"/>
-            <circle cx="6.5" cy="17.5" r="1.8" fill="currentColor" opacity="0.5"/>
+    def color_picker_icon(size: int = 20, color: str = None) -> QIcon: #vers 7
+        """Color picker icon"""
+        svg_data = '''<svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10"
+                stroke="currentColor" stroke-width="2.5" fill="none"/>
+            <path d="M12 4v6M12 14v6M4 12h6M14 12h6"
+                stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
         </svg>'''
         return SVGIconFactory._create_icon(svg_data, size, color)
 
@@ -4972,3 +4940,73 @@ def get_water_workshop_icon(size: int = 24, color: str = None, bg_color: str = N
 # Attach as static methods on SVGIconFactory
 SVGIconFactory.radar_workshop_icon = staticmethod(get_radar_workshop_icon)
 SVGIconFactory.water_workshop_icon = staticmethod(get_water_workshop_icon)
+
+
+def svg_edit_icon(size: int = 20, color: str = None) -> QIcon: #vers 2
+    """SVG editor badge — [SvG] three-colour icon like [RGB].
+    S=orange, v=theme colour, G=blue. Uses geometric paths (no <text>)."""
+    svg = (
+        '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">'''
+        '''<rect x="0.5" y="3.5" width="23" height="17" rx="2.5"
+             fill="none" stroke="currentColor" stroke-width="1.2"/>'''
+        '''<rect x="2.5" y="5.5" width="4"  height="1.5" rx="0.5" fill="#ff6600"/>
+           <rect x="2.5" y="10"  width="4"  height="1.5" rx="0.5" fill="#ff6600"/>
+           <rect x="2.5" y="14.5" width="4" height="1.5" rx="0.5" fill="#ff6600"/>
+           <rect x="2.5" y="5.5" width="1.5" height="4.5" rx="0.5" fill="#ff6600"/>
+           <rect x="5"   y="11.5" width="1.5" height="4.5" rx="0.5" fill="#ff6600"/>'''
+        '''<path d="M9.5 6.5 L11.5 14 L13.5 6.5"
+             fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"/>'''
+        '''<path d="M22 6.5 Q18 5 17.5 10.5 Q18 16 22 15"
+             fill="none" stroke="#00aaff" stroke-width="2"
+             stroke-linecap="round"/>
+           <rect x="19.5" y="10" width="2.5" height="1.5" rx="0.5" fill="#00aaff"/>'''
+        '''</svg>'''
+    )
+    return SVGIconFactory._create_icon(svg, size, color)
+
+def get_rw_configurator_icon(size: int = 24, color: str = None, bg_color: str = None) -> QIcon: #vers 1
+    """RW CoreFramework Configurator — circuit board with RW badge and patch wrench."""
+    svg = '''<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+        <!-- Dark background -->
+        <rect width="48" height="48" rx="8" fill="#0d1117"/>
+        <!-- Circuit board traces -->
+        <line x1="4"  y1="12" x2="18" y2="12" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="18" y1="12" x2="18" y2="20" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="30" y1="12" x2="44" y2="12" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="30" y1="12" x2="30" y2="20" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="4"  y1="36" x2="18" y2="36" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="18" y1="36" x2="18" y2="28" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="30" y1="36" x2="44" y2="36" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <line x1="30" y1="36" x2="30" y2="28" stroke="#1a4a7a" stroke-width="1.2" opacity="0.8"/>
+        <!-- Circuit nodes -->
+        <circle cx="4"  cy="12" r="1.8" fill="#2a6aaa" opacity="0.9"/>
+        <circle cx="44" cy="12" r="1.8" fill="#2a6aaa" opacity="0.9"/>
+        <circle cx="4"  cy="36" r="1.8" fill="#2a6aaa" opacity="0.9"/>
+        <circle cx="44" cy="36" r="1.8" fill="#2a6aaa" opacity="0.9"/>
+        <!-- Central chip/badge -->
+        <rect x="14" y="16" width="20" height="16" rx="3" fill="#1a2a4a" stroke="#3a6aaa" stroke-width="1.5"/>
+        <!-- RW text -->
+        <text x="24" y="27" font-family="monospace" font-size="9" font-weight="bold"
+              fill="#4a9aff" text-anchor="middle" letter-spacing="-0.5">RW</text>
+        <!-- Wrench overlay - patch indicator -->
+        <g transform="translate(32,30) rotate(-40)">
+            <rect x="-1.5" y="-6" width="3" height="10" rx="1" fill="#ff8c00" opacity="0.9"/>
+            <circle cx="0" cy="-6" r="3" fill="none" stroke="#ff8c00" stroke-width="1.5" opacity="0.9"/>
+        </g>
+        <!-- Accent dots top -->
+        <circle cx="18" cy="12" r="1.5" fill="#4a9aff" opacity="0.7"/>
+        <circle cx="30" cy="12" r="1.5" fill="#4a9aff" opacity="0.7"/>
+        <circle cx="18" cy="36" r="1.5" fill="#4a9aff" opacity="0.7"/>
+        <circle cx="30" cy="36" r="1.5" fill="#4a9aff" opacity="0.7"/>
+    </svg>'''
+    from PyQt6.QtGui import QPixmap, QPainter
+    from PyQt6.QtSvg import QSvgRenderer
+    from PyQt6.QtCore import Qt
+    px = QPixmap(size, size)
+    px.fill(Qt.GlobalColor.transparent)
+    renderer = QSvgRenderer(svg.encode())
+    p = QPainter(px)
+    renderer.render(p)
+    p.end()
+    return QIcon(px)
