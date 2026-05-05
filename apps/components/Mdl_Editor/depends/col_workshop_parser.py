@@ -9,11 +9,11 @@ Based on GTA Wiki specification
 import struct
 from typing import Tuple, List, Optional
 from apps.debug.debug_functions import img_debugger
-from col_workshop_classes import (
+from apps.components.Mdl_Editor.depends.col_workshop_classes import (
     COLHeader, COLBounds, COLSphere, COLBox,
     COLVertex, COLFace, COLModel, COLVersion
 )
-from col_core_classes import Vector3, COLMaterial, BoundingBox
+from apps.components.Mdl_Editor.depends.col_core_classes import Vector3, COLMaterial, BoundingBox
 
 ##Classes list -
 # COLParser
