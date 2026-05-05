@@ -9760,60 +9760,16 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             return
         self._load_txd_file(path)
 
-    def _parse_txd_lightweight(self, data: bytes) -> list: #vers 1
-        """Lightweight TXD parser — no UI, returns list of texture dicts.
-        Uses TXDWorkshop._parse_single_texture via a minimal wrapper."""
-        import struct
-        textures = []
+    def _parse_txd_lightweight(self, data: bytes) -> list: #vers 2
+        """Lightweight TXD parser — self-contained, no TXDWorkshop dependency.
+        Uses apps/methods/txd_parser.py which decodes DXT1/DXT3/DXT5/RGBA32."""
         try:
-            if len(data) < 24:
-                return textures
-            # TXD header: 0x16 dict chunk
-            main_type, main_size, main_version = struct.unpack_from('<III', data, 0)
-            if main_type != 0x16:
-                return textures
-            # Struct chunk at offset 12
-            st_type, st_size, st_ver = struct.unpack_from('<III', data, 12)
-            if st_type != 0x01:
-                return textures
-            offset = 24  # skip 12-byte header + 12-byte struct header
-            # Texture count (SA = uint16+uint16, earlier = uint32)
-            if main_version >= 0x1803FFFF:
-                tex_count = struct.unpack_from('<H', data, offset)[0]
-            else:
-                tex_count = struct.unpack_from('<I', data, offset)[0]
-            offset += st_size  # advance past struct payload
-            if tex_count <= 0 or tex_count > 4096:
-                return textures
-            # Use a real TXDWorkshop instance (created headlessly once, cached).
-            # The stub approach fails because _parse_single_texture calls many
-            # other self.* methods internally (_decompress_texture, etc.).
-            from apps.components.Txd_Editor.txd_workshop import TXDWorkshop
-            parser = getattr(ModelWorkshop, '_txd_parser_cache', None)
-            if parser is None:
-                try:
-                    parser = TXDWorkshop(main_window=None)
-                    ModelWorkshop._txd_parser_cache = parser
-                except Exception as _e:
-                    print(f"TXDWorkshop init failed: {_e}")
-                    return textures
-            # Set version for this TXD
-            parser.txd_version_id  = main_version
-            parser.txd_device_id   = 2
-            parser.txd_version_str = ''
-            for i in range(tex_count):
-                if offset + 12 > len(data):
-                    break
-                tex_type, tex_size, _ = struct.unpack_from('<III', data, offset)
-                if tex_type == 0x15:
-                    tex = parser._parse_single_texture(
-                        data, offset, i, rw_version=main_version)
-                    if tex and tex.get('name') and tex.get('width', 0) > 0:
-                        textures.append(tex)
-                offset += 12 + tex_size
+            from apps.methods.txd_parser import parse_txd
+            return parse_txd(data)
         except Exception as e:
             print(f"_parse_txd_lightweight error: {e}")
-        return textures
+            import traceback; traceback.print_exc()
+            return []
 
     def _load_txd_file(self, path: str): #vers 3
         """Parse a TXD file, populate texture panel, and feed textures into viewport."""
