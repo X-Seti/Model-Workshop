@@ -1883,14 +1883,24 @@ class AppSettings:
         grid = colors.get('grid', '#e0e0e0')
 
         # System ui - overrides
-        window_bg = colors.get('window_bg', bg_primary)
-        window_text = colors.get('window_text', text_primary)
-        base = colors.get('base', bg_primary)
-        alternate_base = colors.get('alternate_base', bg_secondary)
-        tooltip_bg = colors.get('tooltip_bg', bg_secondary)
-        tooltip_text = colors.get('tooltip_text', text_primary)
-        placeholder_text = colors.get('placeholder_text', '#aaaaaa')
-        disabled_text = colors.get('disabled_text', '#777777')
+        # Derive sensible defaults from bg_primary so light themes stay light
+        from PyQt6.QtGui import QColor as _QC
+        _is_light = _QC(bg_primary).lightness() > 128
+        window_bg = colors.get('window_bg') or bg_primary
+        # If saved window_bg is dark but theme is light, override with bg_primary
+        if _is_light and _QC(window_bg).lightness() < 64:
+            window_bg = bg_primary
+        window_text = colors.get('window_text') or text_primary
+        base = colors.get('base') or bg_primary
+        if _is_light and _QC(base).lightness() < 64:
+            base = bg_primary
+        alternate_base = colors.get('alternate_base') or bg_secondary
+        if _is_light and _QC(alternate_base).lightness() < 64:
+            alternate_base = bg_secondary
+        tooltip_bg = colors.get('tooltip_bg') or bg_secondary
+        tooltip_text = colors.get('tooltip_text') or text_primary
+        placeholder_text = colors.get('placeholder_text', '#888888' if _is_light else '#aaaaaa')
+        disabled_text = colors.get('disabled_text', '#999999' if _is_light else '#777777')
 
         # Additional colors
         success = colors.get('success', '#4caf50')
@@ -3181,7 +3191,9 @@ class AppPanelEffect: #vers 1
         if effect == 'none' or not effect:
             return
 
-        p = QPainter(widget)
+        p = QPainter()
+        if not p.begin(widget):
+            return   # widget not paintable right now — skip silently
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         r = widget.rect()
 
@@ -3195,14 +3207,23 @@ class AppPanelEffect: #vers 1
         except Exception:
             pass
         finally:
-            p.end()
+            if p.isActive():
+                p.end()
 
     @staticmethod
-    def _paint_fill(p, r, cs): #vers 1
+    def _paint_fill(p, r, cs): #vers 2
         from PyQt6.QtGui import QColor, QLinearGradient
         from PyQt6.QtCore import QPointF
         ca = QColor(cs.get('panel_fill_a', '#1a1a2e'))
         cb = QColor(cs.get('panel_fill_b', '#16213e'))
+
+        # If the theme is light but fill colours are dark, use panel_bg instead
+        panel_bg = cs.get('panel_bg') or cs.get('bg_primary', '')
+        if panel_bg:
+            theme_col = QColor(panel_bg)
+            if theme_col.lightness() > 128 and ca.lightness() < 64:
+                ca = cb = theme_col
+
         d  = cs.get('panel_fill_dir', 0)
         if d == 0:
             p.fillRect(r, ca)
@@ -3221,12 +3242,20 @@ class AppPanelEffect: #vers 1
         p.fillRect(r, g)
 
     @staticmethod
-    def _paint_gradient(p, r, cs): #vers 1
+    def _paint_gradient(p, r, cs): #vers 2
         from PyQt6.QtGui import QColor, QLinearGradient
         from PyQt6.QtCore import QPointF
         s1 = QColor(cs.get('panel_grad_stop1', '#1a1a2e'))
         s2 = QColor(cs.get('panel_grad_stop2', '#2d1b4e'))
         s3 = QColor(cs.get('panel_grad_stop3', '#16213e'))
+
+        # Light theme guard — if stops are dark but theme is light, use panel_bg
+        panel_bg = cs.get('panel_bg') or cs.get('bg_primary', '')
+        if panel_bg:
+            theme_col = QColor(panel_bg)
+            if theme_col.lightness() > 128 and s1.lightness() < 64:
+                s1 = s2 = s3 = theme_col
+
         d  = cs.get('panel_grad_dir', 1)
         pts = {
             0: (QPointF(r.left(), r.top()),    QPointF(r.right(), r.top())),
@@ -3280,10 +3309,11 @@ class AppPanelEffect: #vers 1
                 p.drawRect(r.left(), r.top()+row*scale, r.width(), scale)
 
 
-def apply_panel_effects(window, app_settings): #vers 1
+def apply_panel_effects(window, app_settings): #vers 2
     """Walk a window's panels and apply the current panel effect to each.
     Call this after _apply_theme() in any window that uses app_settings.
     Panels targeted: QGroupBox, QFrame with StyledPanel, central widget.
+    Skips: AppSettings dialog itself (its own QGroupBox rows should not be painted over).
     """
     from PyQt6.QtWidgets import QGroupBox, QFrame
     cs = app_settings.current_settings
@@ -3292,8 +3322,24 @@ def apply_panel_effects(window, app_settings): #vers 1
     if effect == 'none':
         return
 
+    # Don't apply panel effects to the settings dialog itself — its
+    # font/colour rows are QGroupBoxes that should show plain theme colour.
+    window_class = type(window).__name__
+    if 'Settings' in window_class or 'Dialog' in window_class:
+        return
+
     # Target panels — QGroupBox and StyledPanel QFrames
     for widget in window.findChildren(QGroupBox):
+        # Skip any widget that lives inside a QScrollArea (settings rows)
+        parent = widget.parent()
+        skip = False
+        while parent:
+            if 'Settings' in type(parent).__name__ or 'Dialog' in type(parent).__name__:
+                skip = True
+                break
+            parent = parent.parent() if hasattr(parent, 'parent') else None
+        if skip:
+            continue
         AppPanelEffect.install(widget, cs)
         widget.update()
 
@@ -3339,7 +3385,9 @@ class PanelPreviewWidget(QWidget): #vers 1
         from PyQt6.QtGui import (QPainter, QColor, QLinearGradient,
                                   QPen, QBrush, QImage, QPixmap)
         from PyQt6.QtCore import QRectF, Qt, QPointF
-        p = QPainter(self)
+        p = QPainter()
+        if not p.begin(self):
+            return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = self.rect()
         cs = self._get_colours()
@@ -3367,7 +3415,8 @@ class PanelPreviewWidget(QWidget): #vers 1
         p.setPen(QPen(QColor("#555555"), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(r.adjusted(0, 0, -1, -1))
-        p.end()
+        if p.isActive():
+            p.end()
 
     def _c(self, key, default="#1a1a2e"):
         return self._dlg.app_settings.current_settings.get(key, default)
@@ -3377,6 +3426,12 @@ class PanelPreviewWidget(QWidget): #vers 1
         from PyQt6.QtCore import QPointF
         ca = QColor(cs.get("panel_fill_a", "#1a1a2e"))
         cb = QColor(cs.get("panel_fill_b", "#16213e"))
+        # Light theme guard
+        panel_bg = cs.get('panel_bg') or cs.get('bg_primary', '')
+        if panel_bg:
+            tc = QColor(panel_bg)
+            if tc.lightness() > 128 and ca.lightness() < 64:
+                ca = cb = tc
         d  = cs.get("panel_fill_dir", 0)
         if d == 0:
             p.fillRect(r, ca)
