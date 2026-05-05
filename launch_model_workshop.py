@@ -13,7 +13,7 @@ if __name__ == "__main__":
     try:
         print("Model Workshop Starting...")
         from PyQt6.QtWidgets import QApplication
-        from apps.components.Model_Editor.model_workshop import ModelWorkshop
+        from apps.components.Mdl_Editor.mdl_workshop import MDLWorkshop as ModelWorkshop
         app = QApplication(sys.argv)
         workshop = ModelWorkshop()
         workshop.show()
