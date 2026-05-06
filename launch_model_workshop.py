@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-#this belongs in root /launch_model_workshop.py - Version: 1
-# X-Seti - April25 2026 - Model Workshop - Root Launcher
+#this belongs in root /launch_model_workshop.py - Version: 2
+# X-Seti - May06 2026 - Model Workshop - Root Launcher
 
 import sys
 from pathlib import Path
@@ -13,9 +13,11 @@ if __name__ == "__main__":
     try:
         print("Model Workshop Starting...")
         from PyQt6.QtWidgets import QApplication
-        from apps.components.Mdl_Editor.mdl_workshop import MDLWorkshop as ModelWorkshop
+        from apps.components.Mdl_Editor.model_workshop import ModelWorkshop
         app = QApplication(sys.argv)
         workshop = ModelWorkshop()
+        workshop.setWindowTitle("Model Workshop - Standalone")
+        workshop.resize(1200, 800)
         workshop.show()
         sys.exit(app.exec())
     except ImportError as e:
