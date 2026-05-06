@@ -1,4 +1,4 @@
-# X-Seti - May 2026 - apps/methods/txd_parser.py - Version: 2
+# X-Seti - May 2026 - apps/methods/txd_parser.py - Version: 4
 # Self-contained GTA PC TXD parser (VC/III/SA).
 # Decodes DXT1, DXT3, DXT5 and uncompressed RGBA32/RGB24 textures to RGBA8888.
 # No external dependencies -- works standalone inside Model-Workshop.
@@ -207,7 +207,7 @@ def _decode_rgb565(data: bytes, w: int, h: int) -> bytes:
     return bytes(out)
 
 
-def _parse_native_texture(data: bytes, base: int) -> Optional[dict]:
+def _parse_native_texture(data: bytes, base: int, _debug: bool = False) -> Optional[dict]:
     """Parse one NativeTexture (chunk type 0x15).
     Handles both SA (d3d_format FourCC) and VC/III (has_alpha + mip data header) layouts."""
     try:
@@ -243,6 +243,11 @@ def _parse_native_texture(data: bytes, base: int) -> Optional[dict]:
         raster_type = data[pos+6]
         flags     = data[pos+7]
         pos += 8
+
+        if _debug:
+            print(f"  tex={tex_name!r} w={w} h={h} rf=0x{raster_format:08x} "
+                  f"d3d=0x{d3d_or_alpha:08x} depth={depth} mips={mip_count} "
+                  f"rtype={raster_type} flags={flags} platform={platform_id}")
 
         if w == 0 or h == 0 or w > 4096 or h > 4096:
             return None
@@ -280,29 +285,49 @@ def _parse_native_texture(data: bytes, base: int) -> Optional[dict]:
                 mip_data = b''
 
             rf_base = raster_format & 0x0F00
-            if rf_base == RASTER_8888:
-                fmt = 'RGBA32'
-                if mip_size == w*h*4: rgba = _decode_rgba8888(mip_data, w, h)
-            elif rf_base == RASTER_888:
-                fmt = 'RGB24'
-                if mip_size == w*h*3: rgba = _decode_rgb888(mip_data, w, h)
-            elif rf_base == RASTER_565:
-                fmt = 'RGB565'
-                if mip_size == w*h*2: rgba = _decode_rgb565(mip_data, w, h)
-            elif rf_base == RASTER_1555:
-                fmt = 'ARGB1555'
-                # treat as RGB565 approximation
-                if mip_size == w*h*2: rgba = _decode_rgb565(mip_data, w, h)
-            else:
-                # Try DXT from mip data size signature
-                dxt1_size = max(1,(w+3)//4)*max(1,(h+3)//4)*8
-                dxt5_size = max(1,(w+3)//4)*max(1,(h+3)//4)*16
-                if mip_size == dxt1_size:
-                    fmt = 'DXT1'; rgba = _decode_dxt1(mip_data[:mip_size], w, h)
-                elif mip_size == dxt5_size:
-                    fmt = 'DXT5'; rgba = _decode_dxt5(mip_data[:mip_size], w, h)
+            rf_pal  = raster_format & 0x6000  # PAL4=0x4000, PAL8=0x2000
+
+            if _debug:
+                dxt1_sz = max(1,(w+3)//4)*max(1,(h+3)//4)*8
+                dxt5_sz = max(1,(w+3)//4)*max(1,(h+3)//4)*16
+                print(f"    rf_base=0x{rf_base:04x} rf_pal=0x{rf_pal:04x} "
+                      f"mip_size={mip_size} dxt1={dxt1_sz} dxt5={dxt5_sz} "
+                      f"rgba32={w*h*4} rgb24={w*h*3}")
+
+            dxt1_size = max(1,(w+3)//4)*max(1,(h+3)//4)*8
+            dxt5_size = max(1,(w+3)//4)*max(1,(h+3)//4)*16
+
+            # DXT size check takes priority — VC overloads raster_format for compressed data
+            if mip_size == dxt1_size:
+                fmt = 'DXT1'; rgba = _decode_dxt1(mip_data[:mip_size], w, h)
+            elif mip_size == dxt5_size:
+                fmt = 'DXT5'; rgba = _decode_dxt5(mip_data[:mip_size], w, h)
+            elif rf_pal == RASTER_PAL8:
+                # 8-bit palette: 256 * 4 bytes palette + w*h bytes indices
+                fmt = 'PAL8'
+                pal_size  = 256 * 4
+                idx_size  = w * h
+                if len(mip_data) >= pal_size + idx_size:
+                    palette = mip_data[:pal_size]
+                    indices = mip_data[pal_size:pal_size+idx_size]
+                    out = bytearray(w * h * 4)
+                    for i, idx in enumerate(indices):
+                        p = idx * 4
+                        out[i*4]   = palette[p]
+                        out[i*4+1] = palette[p+1]
+                        out[i*4+2] = palette[p+2]
+                        out[i*4+3] = palette[p+3]
+                    rgba = bytes(out)
+            elif rf_base == RASTER_8888 and mip_size == w*h*4:
+                fmt = 'RGBA32'; rgba = _decode_rgba8888(mip_data, w, h)
+            elif rf_base == RASTER_888 and mip_size == w*h*3:
+                fmt = 'RGB24';  rgba = _decode_rgb888(mip_data, w, h)
+            elif rf_base in (RASTER_565, RASTER_1555) and mip_size == w*h*2:
+                fmt = 'RGB565'; rgba = _decode_rgb565(mip_data, w, h)
 
         if rgba is None:
+            if _debug:
+                print(f"    FAILED: rgba is None for {tex_name!r} fmt={fmt}")
             return None
 
         return {
@@ -349,7 +374,7 @@ def parse_txd(data: bytes) -> List[dict]:
                 break
             ct, cs, cv, _ = _read_chunk(data, pos)
             if ct == RW_TEXTURE_NATIVE:
-                tex = _parse_native_texture(data, pos)
+                tex = _parse_native_texture(data, pos, _debug=True)
                 if tex:
                     textures.append(tex)
             pos += 12 + cs
