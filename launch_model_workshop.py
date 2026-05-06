@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in root /launch_model_workshop.py - Version: 2
+#this belongs in root /launch_model_workshop.py - Version: 3
 # X-Seti - May06 2026 - Model Workshop - Root Launcher
 
 import sys
@@ -13,7 +13,7 @@ if __name__ == "__main__":
     try:
         print("Model Workshop Starting...")
         from PyQt6.QtWidgets import QApplication
-        from apps.components.Mdl_Editor.model_workshop import ModelWorkshop
+        from apps.components.Model_Editor.model_workshop import ModelWorkshop
         app = QApplication(sys.argv)
         workshop = ModelWorkshop()
         workshop.setWindowTitle("Model Workshop - Standalone")
