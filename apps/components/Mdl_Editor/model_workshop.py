@@ -9852,7 +9852,7 @@ def open_workshop(main_window, img_path=None): #vers 3
         workshop.show()
         return workshop
     except Exception as e:
-        QMessageBox.critical(main_window, App_name * " Error", f"Failed to open: {str(e)}")
+        QMessageBox.critical(main_window, App_name + " Error", f"Failed to open: {str(e)}")
         return None
 
 
