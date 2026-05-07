@@ -106,7 +106,7 @@ class _DFFGeometryAdapter:
     The viewport expects model.vertices (objects with .x .y .z) and
     model.faces (objects with .vertex_indices or .a .b .c).
     DFF Geometry has .vertices (Vector3) and .triangles (Triangle with .v1 .v2 .v3).
-    This adapter translates between the two.
+    Vertices are transformed to world space using the frame hierarchy.
     """
 
     class _FaceAdapter:
@@ -117,15 +117,71 @@ class _DFFGeometryAdapter:
             self.a = tri.v1
             self.b = tri.v2
             self.c = tri.v3
-            self.material = tri.material_id   # int (palette index for colour)
+            self.material = tri.material_id
 
-    def __init__(self, geometry, geometry_index: int = 0): #vers 1
-        self.vertices = geometry.vertices             # List[Vector3] — .x .y .z
-        self.faces    = [self._FaceAdapter(t) for t in geometry.triangles]
-        self.spheres  = []    # no collision spheres in DFF geometry
-        self.boxes    = []    # no collision boxes in DFF geometry
-        self.name     = f"geometry_{geometry_index}"
-        self._geometry = geometry    # keep reference to original
+    class _V3:
+        """Lightweight Vector3 for transformed vertices."""
+        __slots__ = ('x', 'y', 'z')
+        def __init__(self, x, y, z): self.x = x; self.y = y; self.z = z
+
+    @staticmethod
+    def _world_matrix(frames, frame_idx): #vers 1
+        """Accumulate rotation+position up the frame parent chain.
+        Returns (rot3x3_flat, tx, ty, tz) in world space."""
+        # Identity
+        r = [1,0,0, 0,1,0, 0,0,1]
+        tx, ty, tz = 0.0, 0.0, 0.0
+        visited = set()
+        idx = frame_idx
+        chain = []
+        while 0 <= idx < len(frames) and idx not in visited:
+            visited.add(idx)
+            chain.append(frames[idx])
+            idx = frames[idx].parent_index
+        # Apply from root down
+        for frame in reversed(chain):
+            fr = frame.rotation  # 9 floats, row-major
+            fp = frame.position
+            # new_r = r * fr
+            nr = [
+                r[0]*fr[0]+r[1]*fr[3]+r[2]*fr[6],
+                r[0]*fr[1]+r[1]*fr[4]+r[2]*fr[7],
+                r[0]*fr[2]+r[1]*fr[5]+r[2]*fr[8],
+                r[3]*fr[0]+r[4]*fr[3]+r[5]*fr[6],
+                r[3]*fr[1]+r[4]*fr[4]+r[5]*fr[7],
+                r[3]*fr[2]+r[4]*fr[5]+r[5]*fr[8],
+                r[6]*fr[0]+r[7]*fr[3]+r[8]*fr[6],
+                r[6]*fr[1]+r[7]*fr[4]+r[8]*fr[7],
+                r[6]*fr[2]+r[7]*fr[5]+r[8]*fr[8],
+            ]
+            # new_t = r * fp + t
+            ntx = r[0]*fp.x + r[1]*fp.y + r[2]*fp.z + tx
+            nty = r[3]*fp.x + r[4]*fp.y + r[5]*fp.z + ty
+            ntz = r[6]*fp.x + r[7]*fp.y + r[8]*fp.z + tz
+            r, tx, ty, tz = nr, ntx, nty, ntz
+        return r, tx, ty, tz
+
+    def __init__(self, geometry, geometry_index: int = 0, dff_model=None, atomic=None): #vers 2
+        self._geometry = geometry
+        self.faces     = [self._FaceAdapter(t) for t in geometry.triangles]
+        self.spheres   = []
+        self.boxes     = []
+        self.name      = f"geometry_{geometry_index}"
+
+        # Build world-space vertices when frame info is available
+        frames = getattr(dff_model, 'frames', []) if dff_model else []
+        frame_idx = atomic.frame_index if (atomic and frames) else -1
+
+        if frames and 0 <= frame_idx < len(frames):
+            rot, tx, ty, tz = self._world_matrix(frames, frame_idx)
+            self.vertices = []
+            for v in geometry.vertices:
+                wx = rot[0]*v.x + rot[1]*v.y + rot[2]*v.z + tx
+                wy = rot[3]*v.x + rot[4]*v.y + rot[5]*v.z + ty
+                wz = rot[6]*v.x + rot[7]*v.y + rot[8]*v.z + tz
+                self.vertices.append(self._V3(wx, wy, wz))
+        else:
+            self.vertices = list(geometry.vertices)
 
     @property
     def vertex_count(self):   return len(self.vertices)
@@ -133,7 +189,7 @@ class _DFFGeometryAdapter:
     def face_count(self):     return len(self.faces)
 
     @property
-    def materials(self): #vers 1
+    def materials(self): #vers 2
         """Expose DFF geometry materials for use by the viewport renderer."""
         return getattr(self._geometry, 'materials', [])
 
@@ -10929,7 +10985,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             for i, geom in enumerate(model.geometries):
                 atomic = next((a for a in model.atomics if a.geometry_index == i), None)
                 frame_name = model.get_frame_name(atomic.frame_index) if atomic else f"geom_{i}"
-                adapter = _DFFGeometryAdapter(geom, i)
+                adapter = _DFFGeometryAdapter(geom, i, dff_model=model, atomic=atomic)
                 self._dff_adapters.append(adapter)
 
                 row = tbl.rowCount()
