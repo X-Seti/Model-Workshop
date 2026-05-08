@@ -287,8 +287,9 @@ class COL3DViewport(QWidget): #vers 2
     def set_view_options(self, **kw):     pass
 
 
-    def set_current_model(self, model, index=0): #vers 1
+    def set_current_model(self, model, index=0): #vers 2
         self._model = model
+        self._tex_diag_done = False
         # Reset view so the new model is centred and visible
         self._pan_x = 0.0
         self._pan_y = 0.0
@@ -379,24 +380,31 @@ class COL3DViewport(QWidget): #vers 2
         self._backface = v; self.update()
 
 
-    def load_textures(self, mod_textures: list): #vers 1
+    def load_textures(self, mod_textures: list): #vers 2
         """Build QImage cache from _mod_textures list for textured rendering.
         Call this whenever _load_txd_file() populates the texture panel."""
         from PyQt6.QtGui import QImage
         self._tex_cache.clear()
+        print(f"[TEX] load_textures: {len(mod_textures)} entries")
         for tex in mod_textures:
             name = tex.get('name', '').lower()
-            if not name:
-                continue
+            fmt  = tex.get('format', '?')
             rgba = tex.get('rgba_data', b'')
             w    = tex.get('width',  0)
             h    = tex.get('height', 0)
+            print(f"  tex name={name!r} fmt={fmt} w={w} h={h} rgba_len={len(rgba)}")
+            if not name:
+                continue
             if rgba and w > 0 and h > 0:
                 try:
                     img = QImage(rgba, w, h, w * 4, QImage.Format.Format_RGBA8888)
-                    self._tex_cache[name] = img.copy()  # copy to own memory
-                except Exception:
-                    pass
+                    self._tex_cache[name] = img.copy()
+                    print(f"    cached ok: {name!r}")
+                except Exception as e:
+                    print(f"    QImage error: {e}")
+            else:
+                print(f"    SKIPPED: rgba={bool(rgba)} w={w} h={h}")
+        print(f"[TEX] cache keys: {list(self._tex_cache.keys())}")
         self.update()
 
 
@@ -1111,6 +1119,11 @@ class COL3DViewport(QWidget): #vers 2
                     # No per-face transform stack — one drawImage call per face.
                     tex_img = None
                     mat_obj = _dff_mats[_mat_id] if 0 <= _mat_id < len(_dff_mats) else None
+                    if not getattr(self, '_tex_diag_done', False):
+                        self._tex_diag_done = True
+                        print(f"[RENDER] cache={list(_tex_cache.keys())} "
+                              f"mats={[getattr(m,'texture_name','') for m in _dff_mats]} "
+                              f"uv_len={len(_uv_layer)}")
                     if mat_obj:
                         tname = (getattr(mat_obj, 'texture_name', '') or '').strip()
                         if tname and tname.lower() not in ('', 'null', 'none'):
