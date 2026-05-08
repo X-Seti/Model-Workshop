@@ -1053,6 +1053,16 @@ class COL3DViewport(QWidget): #vers 2
         _uv_layer  = _uv_layers[0] if _uv_layers else []
         _tex_cache = getattr(self, '_tex_cache', {})
 
+        # Helper: build QPainterPath from 3 screen points (used for texture clip)
+        def _face_path(screen_pts):
+            from PyQt6.QtGui import QPainterPath
+            path = QPainterPath()
+            path.moveTo(screen_pts[0])
+            path.lineTo(screen_pts[1])
+            path.lineTo(screen_pts[2])
+            path.closeSubpath()
+            return path
+
         if self._show_mesh and verts and faces:
             for face_idx, face in enumerate(faces):
                 idx = getattr(face,'vertex_indices',None)
@@ -1097,7 +1107,8 @@ class COL3DViewport(QWidget): #vers 2
                     p.drawPolygon(QPolygonF(pts))
 
                 elif rs == 'textured':
-                    # Look up texture image for this material
+                    # Fast textured path: affine UV blit using drawImage(target, src, src_rect)
+                    # No per-face transform stack — one drawImage call per face.
                     tex_img = None
                     mat_obj = _dff_mats[_mat_id] if 0 <= _mat_id < len(_dff_mats) else None
                     if mat_obj:
@@ -1107,64 +1118,45 @@ class COL3DViewport(QWidget): #vers 2
                                        _tex_cache.get(tname.lower().split('.')[0]))
                     if tex_img and _uv_layer and all(i < len(_uv_layer) for i in idx):
                         uvs = [_uv_layer[i] for i in idx]
-                        try:
-                            from PyQt6.QtGui import QTransform, QRegion
-                            tw, th = tex_img.width(), tex_img.height()
-                            sx0,sy0 = uvs[0].u*tw, uvs[0].v*th
-                            sx1,sy1 = uvs[1].u*tw, uvs[1].v*th
-                            sx2,sy2 = uvs[2].u*tw, uvs[2].v*th
-                            dx0,dy0 = pts[0].x(), pts[0].y()
-                            dx1,dy1 = pts[1].x(), pts[1].y()
-                            dx2,dy2 = pts[2].x(), pts[2].y()
-                            # Affine: texture-pixels → screen-pixels
-                            det = (sx1-sx0)*(sy2-sy0) - (sx2-sx0)*(sy1-sy0)
-                            if abs(det) > 0.1:
-                                m00=((dx1-dx0)*(sy2-sy0)-(dx2-dx0)*(sy1-sy0))/det
-                                m01=((dx2-dx0)*(sx1-sx0)-(dx1-dx0)*(sx2-sx0))/det
-                                m10=((dy1-dy0)*(sy2-sy0)-(dy2-dy0)*(sy1-sy0))/det
-                                m11=((dy2-dy0)*(sx1-sx0)-(dy1-dy0)*(sx2-sx0))/det
-                                t0 = dx0 - m00*sx0 - m01*sy0
-                                t1 = dy0 - m10*sx0 - m11*sy0
-                                xf = QTransform(m00,m10,m01,m11,t0,t1)
-                                # Invert to get screen→texture mapping for clip polygon
-                                xf_inv, invertible = xf.inverted()
-                                if invertible:
-                                    p.save()
-                                    p.setTransform(xf)
-                                    # Clip polygon in TEXTURE space (after transform set)
-                                    tex_poly = xf_inv.map(QPolygonF(pts))
-                                    p.setClipRegion(
-                                        QRegion(tex_poly.toPolygon()),
-                                        Qt.ClipOperation.ReplaceClip)
-                                    p.drawImage(0, 0, tex_img)
-                                    p.restore()
-                                    # Shading overlay in screen space
-                                    shadow_alpha = int((1.0 - _shade) * 140)
-                                    if shadow_alpha > 8:
-                                        p.save()
-                                        p.setBrush(QBrush(QColor(0,0,0,shadow_alpha)))
-                                        p.setPen(Qt.PenStyle.NoPen)
-                                        p.drawPolygon(QPolygonF(pts))
-                                        p.restore()
-                                else:
-                                    raise ValueError("not invertible")
-                            else:
-                                raise ValueError("degenerate UV")
-                        except Exception:
-                            _s2 = _shade
-                            fb = QColor(int(mc.red()*_s2),int(mc.green()*_s2),int(mc.blue()*_s2))
-                            p.setBrush(QBrush(fb)); p.setPen(Qt.PenStyle.NoPen)
+                        tw, th = tex_img.width(), tex_img.height()
+                        # UV bounding box in texture space → source rect
+                        us = [max(0.0, min(1.0, uvs[j].u)) for j in range(3)]
+                        vs = [max(0.0, min(1.0, uvs[j].v)) for j in range(3)]
+                        su0, sv0 = min(us) * tw, min(vs) * th
+                        su1, sv1 = max(us) * tw, max(vs) * th
+                        sw, sh = max(su1 - su0, 1.0), max(sv1 - sv0, 1.0)
+                        # Screen bounding box → target rect
+                        xs2 = [pts[j].x() for j in range(3)]
+                        ys2 = [pts[j].y() for j in range(3)]
+                        dx0, dy0 = min(xs2), min(ys2)
+                        dw, dh   = max(xs2) - dx0, max(ys2) - dy0
+                        if dw < 1.0: dw = 1.0
+                        if dh < 1.0: dh = 1.0
+                        # Clip to face polygon, draw texture sub-rect into screen rect
+                        p.save()
+                        p.setClipPath(_face_path(pts), Qt.ClipOperation.ReplaceClip)
+                        from PyQt6.QtCore import QRectF
+                        p.drawImage(
+                            QRectF(dx0, dy0, dw, dh),
+                            tex_img,
+                            QRectF(su0, sv0, sw, sh))
+                        # Shading overlay
+                        shadow_alpha = int((1.0 - _shade) * 140)
+                        if shadow_alpha > 8:
+                            p.setBrush(QBrush(QColor(0, 0, 0, shadow_alpha)))
+                            p.setPen(Qt.PenStyle.NoPen)
                             p.drawPolygon(QPolygonF(pts))
+                        p.restore()
                     else:
                         # No texture — shaded solid fallback
-                        _sc = mc if mat_obj else QColor(170,175,180)
+                        _sc = mc if mat_obj else QColor(170, 175, 180)
                         _s3 = _shade
                         shaded_fb = QColor(
                             int(_sc.red()   * _s3),
                             int(_sc.green() * _s3),
                             int(_sc.blue()  * _s3))
                         p.setBrush(QBrush(shaded_fb))
-                        p.setPen(QPen(QColor(80,80,80,60), 0.3))
+                        p.setPen(QPen(QColor(80, 80, 80, 60), 0.3))
                         p.drawPolygon(QPolygonF(pts))
 
                 elif rs == 'solid':
