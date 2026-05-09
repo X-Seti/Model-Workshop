@@ -290,7 +290,8 @@ class COL3DViewport(QWidget): #vers 2
     def set_current_model(self, model, index=0): #vers 3
         self._model = model
         self._tex_diag_done = False
-        self._sort_cache = None   # invalidate depth sort
+        self._sort_cache = None
+        self._tex_diag2_done = False
         self._sort_yaw   = None
         # Reset view so the new model is centred and visible
         self._pan_x = 0.0
@@ -1162,6 +1163,13 @@ class COL3DViewport(QWidget): #vers 2
                         if tname and tname.lower() not in ('', 'null', 'none'):
                             tex_img = (_tex_cache.get(tname.lower()) or
                                        _tex_cache.get(tname.lower().split('.')[0]))
+                    if not getattr(self, '_tex_diag2_done', False):
+                        self._tex_diag2_done = True
+                        _has_uv = bool(_uv_layer)
+                        _geom2 = getattr(model, '_geometry', None)
+                        print(f"[TEX2] tex_img={tex_img is not None} uv_layer_len={len(_uv_layer)} "
+                              f"model_type={type(model).__name__} _geometry={_geom2 is not None} "
+                              f"idx={idx} mat_obj={mat_obj is not None} tname={getattr(mat_obj,'texture_name','') if mat_obj else 'N/A'}")
                     if tex_img and _uv_layer and all(i < len(_uv_layer) for i in idx):
                         uvs = [_uv_layer[i] for i in idx]
                         tw, th = tex_img.width(), tex_img.height()
@@ -2609,7 +2617,8 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         swap_row.addWidget(reload_btn)
 
         form.addRow("Use TXD:", swap_row)
-        chosen_color = [self._get_ui_color('viewport_text')]
+        _vp = getattr(self, 'preview_widget', None)
+        chosen_color = [_vp._get_ui_color('viewport_text') if _vp and hasattr(_vp, '_get_ui_color') else __import__('PyQt6.QtGui', fromlist=['QColor']).QColor(200, 200, 200)]
         col_swatch = QLabel()
         col_swatch.setFixedSize(32,26)
         col_swatch.setFrameShape(QFrame.Shape.Box)
@@ -6256,7 +6265,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
                 self._dff_adapters[i] = _DFFGeometryAdapter(geom, i, dff_model=dff_model, atomic=atomic)
         vp = getattr(self, 'preview_widget', None)
         if vp:
-            row = self._get_selected_geom_index()
+            row = self._dff_get_selected_geom_idx()
             if 0 <= row < len(getattr(self, '_dff_adapters', [])):
                 vp.set_current_model(self._dff_adapters[row], row)
             vp.update()
@@ -6324,7 +6333,7 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             b.setEnabled(True)
         self._set_status(f"Geometry [{idx}] copied.")
 
-    def _dff_paste_geometry(self): #vers 1
+    def _dff_paste_geometry(self): #vers 2
         """Paste geometry from clipboard into current DFF."""
         if not hasattr(self, '_dff_clipboard_geom') or self._dff_clipboard_geom is None:
             QMessageBox.warning(self, "Paste", "Nothing in clipboard.")
@@ -6336,11 +6345,8 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         geoms = getattr(model, 'geometries', [])
         geoms.append(copy.deepcopy(self._dff_clipboard_geom))
         model.geometries = geoms
-        self._populate_dff_detail_table(model)
-        vp = getattr(self, 'preview_widget', None)
-        if vp:
-            vp._model = model
-            vp.update()
+        # Rebuild full display so adapters are recreated
+        self._display_dff_model(model)
         self._set_status("Geometry pasted.")
 
     def _dff_delete_geometry(self): #vers 1
