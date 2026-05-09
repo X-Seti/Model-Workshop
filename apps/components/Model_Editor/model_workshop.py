@@ -1099,10 +1099,13 @@ class COL3DViewport(QWidget): #vers 2
                 try:
                     pts=[QPointF(*to_screen(*g3(verts[i]))) for i in idx]
                 except (IndexError,AttributeError): continue
-                # Backface detection — darken back faces, don't cull (GTA winding inconsistent)
+                # Backface detection via 2D cross product
                 _ax=pts[1].x()-pts[0].x(); _ay=pts[1].y()-pts[0].y()
                 _bx=pts[2].x()-pts[0].x(); _by=pts[2].y()-pts[0].y()
                 _is_backface = (_ax*_by - _ay*_bx) > 0
+                # Cull back faces in solid/textured — show both in semi/wireframe
+                if _is_backface and rs in ('solid','textured'):
+                    continue
                 _mat = getattr(face,'material',0)
                 _mat_id = getattr(_mat,'material_id',_mat) if not isinstance(_mat,int) else _mat
                 mc = mat_col(_mat_id)
@@ -1184,6 +1187,11 @@ class COL3DViewport(QWidget): #vers 2
                         dx2, dy2 = pts[2].x(), pts[2].y()
                         _det = (sx1-sx0)*(sy2-sy0) - (sx2-sx0)*(sy1-sy0)
                         if abs(_det) > 0.5:
+                            # If det<0 UV triangle is CW — swap v1/v2 to make CCW
+                            if _det < 0:
+                                sx1,sy1,sx2,sy2 = sx2,sy2,sx1,sy1
+                                dx1,dy1,dx2,dy2 = dx2,dy2,dx1,dy1
+                                _det = -_det
                             _id = 1.0 / _det
                             _a = ((dx1-dx0)*(sy2-sy0) - (dx2-dx0)*(sy1-sy0)) * _id
                             _b = ((dx2-dx0)*(sx1-sx0) - (dx1-dx0)*(sx2-sx0)) * _id
@@ -1193,7 +1201,6 @@ class COL3DViewport(QWidget): #vers 2
                             _f = dy0 - _c*sx0 - _d*sy0
                             xform = _QTransform(_a, _c, 0, _b, _d, 0, _e, _f, 1)
                             p.save()
-                            # Set clip THEN transform — clip is in device coords via CoordMode
                             p.setClipPath(_face_path(pts), Qt.ClipOperation.ReplaceClip)
                             p.setWorldTransform(xform, False)
                             p.drawImage(_QRectF(0, 0, tw, th), tex_img)
