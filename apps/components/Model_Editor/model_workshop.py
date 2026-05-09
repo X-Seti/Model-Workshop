@@ -1066,7 +1066,8 @@ class COL3DViewport(QWidget): #vers 2
         # Hoist imports out of face loop
         import math as _fmod_math
         from PyQt6.QtGui import QTransform as _QTransform, QPolygon as _QPolygon
-        from PyQt6.QtCore import QRectF as _QRectF, QPoint as _QPoint, QRegion as _QRegion
+        from PyQt6.QtCore import QRectF as _QRectF, QPoint as _QPoint
+        from PyQt6.QtGui import QRegion as _QRegion
 
         # Helper: build clip polygon for texture face
         def _face_path(screen_pts):
