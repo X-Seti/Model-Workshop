@@ -1063,7 +1063,12 @@ class COL3DViewport(QWidget): #vers 2
         _uv_layer  = _uv_layers[0] if _uv_layers else []
         _tex_cache = getattr(self, '_tex_cache', {})
 
-        # Helper: build QPainterPath from 3 screen points (used for texture clip)
+        # Hoist imports out of face loop
+        import math as _fmod_math
+        from PyQt6.QtGui import QTransform as _QTransform, QPolygon as _QPolygon
+        from PyQt6.QtCore import QRectF as _QRectF, QPoint as _QPoint, QRegion as _QRegion
+
+        # Helper: build clip polygon for texture face
         def _face_path(screen_pts):
             from PyQt6.QtGui import QPainterPath
             path = QPainterPath()
@@ -1072,6 +1077,10 @@ class COL3DViewport(QWidget): #vers 2
             path.lineTo(screen_pts[2])
             path.closeSubpath()
             return path
+
+        def _face_region(screen_pts):
+            poly = _QPolygon([_QPoint(int(pt.x()), int(pt.y())) for pt in screen_pts])
+            return _QRegion(poly)
 
         if self._show_mesh and verts and faces:
             # Painter's algorithm: back-to-front depth sort (cached per yaw bucket)
@@ -1155,41 +1164,39 @@ class COL3DViewport(QWidget): #vers 2
                     if tex_img and _uv_layer and all(i < len(_uv_layer) for i in idx):
                         uvs = [_uv_layer[i] for i in idx]
                         tw, th = tex_img.width(), tex_img.height()
-                        # Affine UV mapping: build 3x3 transform from UV-space → screen-space
-                        # using the 3 triangle corners as control points.
-                        # Solve: [sx,sy,1] * M = [dx,dy,1]  (affine, no perspective)
-                        sx0, sy0 = uvs[0].u * tw, uvs[0].v * th
-                        sx1, sy1 = uvs[1].u * tw, uvs[1].v * th
-                        sx2, sy2 = uvs[2].u * tw, uvs[2].v * th
+                        # UV → texture pixel coords (no clamping — keep tiling)
+                        _uvm = _fmod_math
+                        sx0 = (_uvm.fmod(uvs[0].u, 1.0) or uvs[0].u) * tw
+                        sy0 = (_uvm.fmod(uvs[0].v, 1.0) or uvs[0].v) * th
+                        sx1 = (_uvm.fmod(uvs[1].u, 1.0) or uvs[1].u) * tw
+                        sy1 = (_uvm.fmod(uvs[1].v, 1.0) or uvs[1].v) * th
+                        sx2 = (_uvm.fmod(uvs[2].u, 1.0) or uvs[2].u) * tw
+                        sy2 = (_uvm.fmod(uvs[2].v, 1.0) or uvs[2].v) * th
                         dx0, dy0 = pts[0].x(), pts[0].y()
                         dx1, dy1 = pts[1].x(), pts[1].y()
                         dx2, dy2 = pts[2].x(), pts[2].y()
-                        # det of source triangle
                         _det = (sx1-sx0)*(sy2-sy0) - (sx2-sx0)*(sy1-sy0)
                         p.save()
-                        p.setClipPath(_face_path(pts), Qt.ClipOperation.ReplaceClip)
+                        p.setClipRegion(_face_region(pts), Qt.ClipOperation.ReplaceClip)
                         if abs(_det) > 0.5:
-                            from PyQt6.QtGui import QTransform
-                            from PyQt6.QtCore import QRectF
                             _id = 1.0 / _det
-                            # Affine coefficients mapping (u,v) → (x,y)
                             _a = ((dx1-dx0)*(sy2-sy0) - (dx2-dx0)*(sy1-sy0)) * _id
                             _b = ((dx2-dx0)*(sx1-sx0) - (dx1-dx0)*(sx2-sx0)) * _id
                             _c = ((dy1-dy0)*(sy2-sy0) - (dy2-dy0)*(sy1-sy0)) * _id
                             _d = ((dy2-dy0)*(sx1-sx0) - (dy1-dy0)*(sx2-sx0)) * _id
                             _e = dx0 - _a*sx0 - _b*sy0
                             _f = dy0 - _c*sx0 - _d*sy0
-                            xform = QTransform(_a, _c, 0, _b, _d, 0, _e, _f, 1)
-                            p.setTransform(xform, True)
-                            p.drawImage(QRectF(0, 0, tw, th), tex_img)
+                            xform = _QTransform(_a, _c, 0, _b, _d, 0, _e, _f, 1)
+                            # combine=False: replace painter transform, don't compound
+                            p.setTransform(xform, False)
+                            p.drawImage(_QRectF(0, 0, tw, th), tex_img)
                             p.resetTransform()
                         else:
-                            # Degenerate triangle — solid material colour
                             p.setBrush(QBrush(mc)); p.setPen(Qt.PenStyle.NoPen)
                             p.drawPolygon(QPolygonF(pts))
-                        # Shading overlay
                         shadow_alpha = int((1.0 - _shade) * 140)
                         if shadow_alpha > 8:
+                            p.resetTransform()
                             p.setBrush(QBrush(QColor(0, 0, 0, shadow_alpha)))
                             p.setPen(Qt.PenStyle.NoPen)
                             p.drawPolygon(QPolygonF(pts))
