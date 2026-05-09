@@ -1115,6 +1115,12 @@ class COL3DViewport(QWidget): #vers 2
                 try:
                     pts=[QPointF(*to_screen(*g3(verts[i]))) for i in idx]
                 except (IndexError,AttributeError): continue
+                # Back-face cull in screen space (skip for wireframe/semi)
+                if rs in ('solid', 'textured'):
+                    _ax = pts[1].x()-pts[0].x(); _ay = pts[1].y()-pts[0].y()
+                    _bx = pts[2].x()-pts[0].x(); _by = pts[2].y()-pts[0].y()
+                    if (_ax*_by - _ay*_bx) > 0:  # clockwise = back-facing
+                        continue
                 _mat = getattr(face,'material',0)
                 _mat_id = getattr(_mat,'material_id',_mat) if not isinstance(_mat,int) else _mat
                 mc = mat_col(_mat_id)
@@ -9252,34 +9258,33 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self._load_txd_into_workshop()
 
 
-    def _open_dff_standalone(self): #vers 2
-        """Open DFF + optionally TXD in one combined dialog sequence."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QCheckBox
-        start_dir = os.path.dirname(getattr(self, '_current_dff_path', ''))
+    def _open_dff_standalone(self): #vers 3
+        """Open DFF + optionally TXD. Remembers last directory."""
+        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
+                                     QLabel, QLineEdit, QPushButton, QCheckBox)
 
-        # - Dialog
+        # Persist last-used directory across calls
+        _settings_key = '_mw_last_open_dir'
+        start_dir = getattr(self, _settings_key, '') or os.path.dirname(
+            getattr(self, '_current_dff_path', '') or '')
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Open DFF Model")
         dlg.setMinimumWidth(520)
         lay = QVBoxLayout(dlg)
         lay.setSpacing(8)
 
-        def _row(label_text, placeholder, browse_filter):
+        def _row(label_text, placeholder):
             row = QHBoxLayout()
-            lbl = QLabel(label_text)
-            lbl.setFixedWidth(44)
-            edit = QLineEdit()
-            edit.setPlaceholderText(placeholder)
-            btn = QPushButton("…")
-            btn.setFixedWidth(28)
+            lbl = QLabel(label_text); lbl.setFixedWidth(44)
+            edit = QLineEdit(); edit.setPlaceholderText(placeholder)
+            btn = QPushButton("…"); btn.setFixedWidth(28)
             row.addWidget(lbl); row.addWidget(edit, 1); row.addWidget(btn)
             lay.addLayout(row)
             return edit, btn
 
-        dff_edit, dff_btn = _row("DFF:", "Select a DFF model file…",
-                                 "DFF Models (*.dff)")
-        txd_edit, txd_btn = _row("TXD:", "Select matching TXD (optional)…",
-                                 "TXD Files (*.txd)")
+        dff_edit, dff_btn = _row("DFF:", "Select a DFF model file…")
+        txd_edit, txd_btn = _row("TXD:", "Select matching TXD (optional)…")
 
         auto_txd_cb = QCheckBox("Auto-find TXD with same name in same folder")
         auto_txd_cb.setChecked(True)
@@ -9287,14 +9292,17 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
         def _pick_dff():
             p, _ = QFileDialog.getOpenFileName(
-                dlg, "Open DFF", start_dir, "DFF Models (*.dff);;All Files (*)")
+                dlg, "Open DFF", start_dir,
+                "DFF Models (*.dff);;DFF + TXD (*.dff *.txd);;All Files (*)")
             if p:
                 dff_edit.setText(p)
-                # Auto-fill TXD if same-name .txd exists alongside
+                setattr(self, _settings_key, os.path.dirname(p))
                 if auto_txd_cb.isChecked():
-                    txd_guess = os.path.splitext(p)[0] + '.txd'
-                    if os.path.isfile(txd_guess):
-                        txd_edit.setText(txd_guess)
+                    for ext in ('.txd', '.TXD'):
+                        txd_guess = os.path.splitext(p)[0] + ext
+                        if os.path.isfile(txd_guess):
+                            txd_edit.setText(txd_guess)
+                            break
 
         def _pick_txd():
             start = os.path.dirname(dff_edit.text()) or start_dir
@@ -9307,12 +9315,10 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         txd_btn.clicked.connect(_pick_txd)
 
         btn_row = QHBoxLayout()
-        ok_btn     = QPushButton("Open")
-        ok_btn.setDefault(True)
+        ok_btn = QPushButton("Open"); ok_btn.setDefault(True)
         cancel_btn = QPushButton("Cancel")
         btn_row.addStretch()
-        btn_row.addWidget(ok_btn)
-        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn); btn_row.addWidget(cancel_btn)
         lay.addLayout(btn_row)
         ok_btn.clicked.connect(dlg.accept)
         cancel_btn.clicked.connect(dlg.reject)
@@ -9322,14 +9328,11 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
         dff_path = dff_edit.text().strip()
         txd_path = txd_edit.text().strip()
-
         if not dff_path:
             return
 
-        # Load DFF
+        setattr(self, _settings_key, os.path.dirname(dff_path))
         self.open_dff_file(dff_path)
-
-        # Load TXD if provided
         if txd_path and os.path.isfile(txd_path):
             self._load_txd_file(txd_path)
 
