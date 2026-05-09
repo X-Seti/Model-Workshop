@@ -1072,7 +1072,24 @@ class COL3DViewport(QWidget): #vers 2
             return path
 
         if self._show_mesh and verts and faces:
-            for face_idx, face in enumerate(faces):
+            # Painter's algorithm: back-to-front depth sort
+            import math as _math
+            _yr = _math.radians(self._yaw)
+            _cy2, _sy2 = _math.cos(_yr), _math.sin(_yr)
+            def _face_depth(face):
+                _idx2 = getattr(face,'vertex_indices',None)
+                if _idx2 is None:
+                    _fa2 = getattr(face,'a',None)
+                    if _fa2 is not None: _idx2=(_fa2,face.b,face.c)
+                if not _idx2 or len(_idx2)!=3: return 0.0
+                try:
+                    d=0.0
+                    for _i in _idx2:
+                        _vx,_vy,_ = g3(verts[_i]); d += _vx*_sy2+_vy*_cy2
+                    return d/3.0
+                except Exception: return 0.0
+            _sorted_faces = sorted(enumerate(faces), key=lambda _t: _face_depth(_t[1]), reverse=True)
+            for face_idx, face in _sorted_faces:
                 idx = getattr(face,'vertex_indices',None)
                 if idx is None:
                     fa = getattr(face,'a',None)
@@ -1132,27 +1149,38 @@ class COL3DViewport(QWidget): #vers 2
                     if tex_img and _uv_layer and all(i < len(_uv_layer) for i in idx):
                         uvs = [_uv_layer[i] for i in idx]
                         tw, th = tex_img.width(), tex_img.height()
-                        # UV bounding box in texture space → source rect
-                        us = [max(0.0, min(1.0, uvs[j].u)) for j in range(3)]
-                        vs = [max(0.0, min(1.0, uvs[j].v)) for j in range(3)]
-                        su0, sv0 = min(us) * tw, min(vs) * th
-                        su1, sv1 = max(us) * tw, max(vs) * th
-                        sw, sh = max(su1 - su0, 1.0), max(sv1 - sv0, 1.0)
-                        # Screen bounding box → target rect
-                        xs2 = [pts[j].x() for j in range(3)]
-                        ys2 = [pts[j].y() for j in range(3)]
-                        dx0, dy0 = min(xs2), min(ys2)
-                        dw, dh   = max(xs2) - dx0, max(ys2) - dy0
-                        if dw < 1.0: dw = 1.0
-                        if dh < 1.0: dh = 1.0
-                        # Clip to face polygon, draw texture sub-rect into screen rect
+                        # Affine UV mapping: build 3x3 transform from UV-space → screen-space
+                        # using the 3 triangle corners as control points.
+                        # Solve: [sx,sy,1] * M = [dx,dy,1]  (affine, no perspective)
+                        sx0, sy0 = uvs[0].u * tw, uvs[0].v * th
+                        sx1, sy1 = uvs[1].u * tw, uvs[1].v * th
+                        sx2, sy2 = uvs[2].u * tw, uvs[2].v * th
+                        dx0, dy0 = pts[0].x(), pts[0].y()
+                        dx1, dy1 = pts[1].x(), pts[1].y()
+                        dx2, dy2 = pts[2].x(), pts[2].y()
+                        # det of source triangle
+                        _det = (sx1-sx0)*(sy2-sy0) - (sx2-sx0)*(sy1-sy0)
                         p.save()
                         p.setClipPath(_face_path(pts), Qt.ClipOperation.ReplaceClip)
-                        from PyQt6.QtCore import QRectF
-                        p.drawImage(
-                            QRectF(dx0, dy0, dw, dh),
-                            tex_img,
-                            QRectF(su0, sv0, sw, sh))
+                        if abs(_det) > 0.5:
+                            from PyQt6.QtGui import QTransform
+                            from PyQt6.QtCore import QRectF
+                            _id = 1.0 / _det
+                            # Affine coefficients mapping (u,v) → (x,y)
+                            _a = ((dx1-dx0)*(sy2-sy0) - (dx2-dx0)*(sy1-sy0)) * _id
+                            _b = ((dx2-dx0)*(sx1-sx0) - (dx1-dx0)*(sx2-sx0)) * _id
+                            _c = ((dy1-dy0)*(sy2-sy0) - (dy2-dy0)*(sy1-sy0)) * _id
+                            _d = ((dy2-dy0)*(sx1-sx0) - (dy1-dy0)*(sx2-sx0)) * _id
+                            _e = dx0 - _a*sx0 - _b*sy0
+                            _f = dy0 - _c*sx0 - _d*sy0
+                            xform = QTransform(_a, _c, 0, _b, _d, 0, _e, _f, 1)
+                            p.setTransform(xform, True)
+                            p.drawImage(QRectF(0, 0, tw, th), tex_img)
+                            p.resetTransform()
+                        else:
+                            # Degenerate triangle — solid material colour
+                            p.setBrush(QBrush(mc)); p.setPen(Qt.PenStyle.NoPen)
+                            p.drawPolygon(QPolygonF(pts))
                         # Shading overlay
                         shadow_alpha = int((1.0 - _shade) * 140)
                         if shadow_alpha > 8:
@@ -6192,8 +6220,9 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
                 return row
         return 0
 
-    def _dff_transform_vertices(self, fn): #vers 1
+    def _dff_transform_vertices(self, fn): #vers 2
         """Apply fn(x,y,z)->x,y,z to every vertex in every geometry. Refreshes viewport."""
+        from apps.methods.dff_classes import Vector3
         geoms = self._dff_get_geometries()
         if not geoms:
             return
@@ -6201,10 +6230,25 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             verts = getattr(geom, 'vertices', None)
             if not verts:
                 continue
-            geom.vertices = [fn(*v) for v in verts]
+            new_verts = []
+            for v in verts:
+                nx, ny, nz = fn(v.x, v.y, v.z)
+                new_verts.append(Vector3(nx, ny, nz))
+            geom.vertices = new_verts
+        # Rebuild adapters so viewport sees updated data
+        dff_model = getattr(self, '_current_dff_model', None)
+        if dff_model and hasattr(self, '_dff_adapters'):
+            atomics = getattr(dff_model, 'atomics', [])
+            frames  = getattr(dff_model, 'frames', [])
+            for i, geom in enumerate(dff_model.geometries):
+                atomic = next((a for a in atomics if a.geometry_index == i), None)
+                from apps.components.Model_Editor.model_workshop import _DFFGeometryAdapter
+                self._dff_adapters[i] = _DFFGeometryAdapter(geom, i, dff_model=dff_model, atomic=atomic)
         vp = getattr(self, 'preview_widget', None)
         if vp:
-            vp._model = getattr(self, '_current_dff_model', None)
+            row = self._get_selected_geom_index()
+            if 0 <= row < len(getattr(self, '_dff_adapters', [])):
+                vp.set_current_model(self._dff_adapters[row], row)
             vp.update()
         self._set_status("Geometry transformed.")
 
@@ -7570,52 +7614,13 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         tr_lay.addLayout(fmt_lay)
         """
 
-        shd_lay = QHBoxLayout()
-        shd_lay.setSpacing(5)
-
-        self.info_format = QLabel("Prelight: ")
-        self.info_format.setFont(self.panel_font)
-        self.info_format.setMinimumWidth(80)
-        shd_lay.addWidget(self.info_format)
-
-        # Prelighting buttons (DFF mode — replaces shadow mesh for model editing)
-        self.prelight_apply_btn = QPushButton("Apply")
-        self.prelight_apply_btn.setFont(self.button_font)
-        try:
-            self.prelight_apply_btn.setIcon(
-                self.icon_factory.color_picker_icon(color=icon_color))
-            self.prelight_apply_btn.setIconSize(QSize(16, 16))
-        except Exception:
-            pass
-        self.prelight_apply_btn.setFixedHeight(26)
-        self.prelight_apply_btn.setToolTip(
-            "Apply vertex prelighting to DFF model\n"
-            "(ambient + directional light baked into vertex colours)")
-        self.prelight_apply_btn.setEnabled(False)
-        self.prelight_apply_btn.clicked.connect(self._apply_prelighting)
-        shd_lay.addWidget(self.prelight_apply_btn)
-
-        self.prelight_setup_btn = QPushButton("Setup…")
-        self.prelight_setup_btn.setFont(self.button_font)
-        try:
-            self.prelight_setup_btn.setIcon(
-                self.icon_factory.settings_icon(color=icon_color))
-            self.prelight_setup_btn.setIconSize(QSize(16, 16))
-        except Exception:
-            pass
-        self.prelight_setup_btn.setFixedHeight(26)
-        self.prelight_setup_btn.setToolTip(
-            "Configure light sources for prelighting\n"
-            "Set ambient colour, directional lights and intensity")
-        self.prelight_setup_btn.clicked.connect(self._prelight_setup_dialog)
-        shd_lay.addWidget(self.prelight_setup_btn)
-
-        # Keep shadow refs for COL mode (hidden in DFF mode)
+        # Prelighting removed — not implemented
+        self.prelight_apply_btn = None
+        self.prelight_setup_btn = None
+        self.info_format = None
         self.show_shadow_btn   = None
         self.create_shadow_btn = None
         self.remove_shadow_btn = None
-        shd_lay.addStretch()
-        tr_lay.addLayout(shd_lay)
         info_layout.addWidget(self._bottom_text_row)
 
         # - Icon-only row (narrow)
