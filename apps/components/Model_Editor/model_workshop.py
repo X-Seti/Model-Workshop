@@ -1064,7 +1064,7 @@ class COL3DViewport(QWidget): #vers 2
         _tex_cache = getattr(self, '_tex_cache', {})
 
         # Hoist imports out of face loop
-        import math as _fmod_math
+        import math as _fmod_math  # used for depth sort
         from PyQt6.QtGui import QTransform as _QTransform, QPolygon as _QPolygon
         from PyQt6.QtCore import QRectF as _QRectF, QPoint as _QPoint
         from PyQt6.QtGui import QRegion as _QRegion
@@ -1165,14 +1165,10 @@ class COL3DViewport(QWidget): #vers 2
                     if tex_img and _uv_layer and all(i < len(_uv_layer) for i in idx):
                         uvs = [_uv_layer[i] for i in idx]
                         tw, th = tex_img.width(), tex_img.height()
-                        # UV → texture pixel coords (no clamping — keep tiling)
-                        _uvm = _fmod_math
-                        sx0 = (_uvm.fmod(uvs[0].u, 1.0) or uvs[0].u) * tw
-                        sy0 = (_uvm.fmod(uvs[0].v, 1.0) or uvs[0].v) * th
-                        sx1 = (_uvm.fmod(uvs[1].u, 1.0) or uvs[1].u) * tw
-                        sy1 = (_uvm.fmod(uvs[1].v, 1.0) or uvs[1].v) * th
-                        sx2 = (_uvm.fmod(uvs[2].u, 1.0) or uvs[2].u) * tw
-                        sy2 = (_uvm.fmod(uvs[2].v, 1.0) or uvs[2].v) * th
+                        # UV → texture pixel coords, raw (affine handles tiling naturally)
+                        sx0, sy0 = uvs[0].u * tw, uvs[0].v * th
+                        sx1, sy1 = uvs[1].u * tw, uvs[1].v * th
+                        sx2, sy2 = uvs[2].u * tw, uvs[2].v * th
                         dx0, dy0 = pts[0].x(), pts[0].y()
                         dx1, dy1 = pts[1].x(), pts[1].y()
                         dx2, dy2 = pts[2].x(), pts[2].y()
@@ -1195,7 +1191,7 @@ class COL3DViewport(QWidget): #vers 2
                         else:
                             p.setBrush(QBrush(mc)); p.setPen(Qt.PenStyle.NoPen)
                             p.drawPolygon(QPolygonF(pts))
-                        shadow_alpha = int((1.0 - _shade) * 140)
+                        shadow_alpha = int((1.0 - _shade) * 90)  # cap at 90 so texture stays visible
                         if shadow_alpha > 8:
                             p.resetTransform()
                             p.setBrush(QBrush(QColor(0, 0, 0, shadow_alpha)))
