@@ -265,6 +265,7 @@ class COL3DViewport(QWidget): #vers 2
         self.setCursor(Qt.CursorShape.ArrowCursor)
         # Viewport lighting state (used by _compute_face_shade in workshop)
         self._shading_enabled = True
+        self._backface_cull   = True               # cull back faces in solid/textured
         self._light_dir       = (0.5, 0.5, 0.8)   # normalised XYZ toward light
         self._light_ambient   = 0.30               # 0..1
         self._light_intensity = 1.0                # 0..2 multiplier
@@ -1103,8 +1104,9 @@ class COL3DViewport(QWidget): #vers 2
                 _ax=pts[1].x()-pts[0].x(); _ay=pts[1].y()-pts[0].y()
                 _bx=pts[2].x()-pts[0].x(); _by=pts[2].y()-pts[0].y()
                 _is_backface = (_ax*_by - _ay*_bx) > 0
-                # Cull back faces in solid/textured — show both in semi/wireframe
-                if _is_backface and rs in ('solid','textured'):
+                # Backface cull — controlled by _backface_cull toggle
+                _do_cull = getattr(self, '_backface_cull', True)
+                if _is_backface and _do_cull and rs in ('solid','textured'):
                     continue
                 _mat = getattr(face,'material',0)
                 _mat_id = getattr(_mat,'material_id',_mat) if not isinstance(_mat,int) else _mat
@@ -5758,6 +5760,16 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
 
     # - DFF mode toolbar
 
+    def _toggle_backface_cull(self, enabled: bool): #vers 1
+        """Toggle back-face culling on the 3D viewport."""
+        vp = getattr(self, 'preview_widget', None)
+        if vp:
+            vp._backface_cull = enabled
+            vp.update()
+        btn = getattr(self, '_backface_cull_btn', None)
+        if btn:
+            btn.setChecked(enabled)
+
     def _toggle_viewport_shading(self, enabled: bool): #vers 1
         """Toggle Lambertian shading on/off in the viewport."""
         vp = getattr(self, 'preview_widget', None)
@@ -6982,6 +6994,24 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
             self._shading_btn.setText("S")
         self._shading_btn.toggled.connect(self._toggle_viewport_shading)
         self._mod_icon_buttons.append(self._shading_btn)
+
+        # Backface cull toggle
+        self._backface_cull_btn = QPushButton()
+        self._backface_cull_btn.setFixedSize(btn_width, btn_height)
+        self._backface_cull_btn.setCheckable(True)
+        self._backface_cull_btn.setChecked(True)
+        self._backface_cull_btn.setIconSize(icon_size)
+        self._backface_cull_btn.setToolTip(
+            "Toggle back-face culling ON/OFF\n"
+            "ON  = hide back faces (solid/textured)\n"
+            "OFF = show both sides (darkened)")
+        try:
+            self._backface_cull_btn.setIcon(
+                self.icon_factory.backface_icon(color=icon_color))
+        except Exception:
+            self._backface_cull_btn.setText("BF")
+        self._backface_cull_btn.toggled.connect(self._toggle_backface_cull)
+        self._mod_icon_buttons.append(self._backface_cull_btn)
 
         # Light setup button (lightbulb)
         self._light_setup_btn = QPushButton()
