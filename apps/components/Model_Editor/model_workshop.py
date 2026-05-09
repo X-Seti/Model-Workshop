@@ -1115,12 +1115,8 @@ class COL3DViewport(QWidget): #vers 2
                 try:
                     pts=[QPointF(*to_screen(*g3(verts[i]))) for i in idx]
                 except (IndexError,AttributeError): continue
-                # Back-face cull in screen space (skip for wireframe/semi)
-                if rs in ('solid', 'textured'):
-                    _ax = pts[1].x()-pts[0].x(); _ay = pts[1].y()-pts[0].y()
-                    _bx = pts[2].x()-pts[0].x(); _by = pts[2].y()-pts[0].y()
-                    if (_ax*_by - _ay*_bx) > 0:  # clockwise = back-facing
-                        continue
+                # Back-face cull disabled — GTA models have inconsistent winding
+                # Depth sort handles occlusion instead
                 _mat = getattr(face,'material',0)
                 _mat_id = getattr(_mat,'material_id',_mat) if not isinstance(_mat,int) else _mat
                 mc = mat_col(_mat_id)
@@ -1180,9 +1176,19 @@ class COL3DViewport(QWidget): #vers 2
                         uvs = [_uv_layer[i] for i in idx]
                         tw, th = tex_img.width(), tex_img.height()
                         # UV → texture pixel coords, raw (affine handles tiling naturally)
-                        sx0, sy0 = uvs[0].u * tw, uvs[0].v * th
-                        sx1, sy1 = uvs[1].u * tw, uvs[1].v * th
-                        sx2, sy2 = uvs[2].u * tw, uvs[2].v * th
+                        import math as _m
+                        # Skip face if any UV is nan/inf
+                        _uvraw = [(uvs[j].u, uvs[j].v) for j in range(3)]
+                        if any(not _m.isfinite(u) or not _m.isfinite(v) for u,v in _uvraw):
+                            # nan UV — render with material colour instead
+                            _sc = mc; _s3 = _shade
+                            p.setBrush(QBrush(QColor(int(_sc.red()*_s3),int(_sc.green()*_s3),int(_sc.blue()*_s3))))
+                            p.setPen(Qt.PenStyle.NoPen)
+                            p.drawPolygon(QPolygonF(pts))
+                            continue
+                        sx0, sy0 = _uvraw[0][0]*tw, _uvraw[0][1]*th
+                        sx1, sy1 = _uvraw[1][0]*tw, _uvraw[1][1]*th
+                        sx2, sy2 = _uvraw[2][0]*tw, _uvraw[2][1]*th
                         dx0, dy0 = pts[0].x(), pts[0].y()
                         dx1, dy1 = pts[1].x(), pts[1].y()
                         dx2, dy2 = pts[2].x(), pts[2].y()
