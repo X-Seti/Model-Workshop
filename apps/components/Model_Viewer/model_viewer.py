@@ -648,10 +648,14 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
     # ── setup_ui ─────────────────────────────────────────────
 
-    def setup_ui(self): #vers 1
+    def setup_ui(self): #vers 2
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(*self.get_content_margins())
         main_layout.setSpacing(self.setspacing)
+
+        # Viewport must exist before toolbar (toolbar buttons reference it)
+        self.viewport = DFFViewport()
+        self.viewport.app_settings = self.app_settings
 
         main_layout.addWidget(self._create_toolbar())
 
@@ -819,9 +823,7 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
     # ── centre panel — OpenGL viewport ────────────────────────
 
-    def _create_centre_panel(self): #vers 1
-        self.viewport = DFFViewport()
-        self.viewport.app_settings = self.app_settings
+    def _create_centre_panel(self): #vers 2
         return self.viewport
 
     # ── right panel — model info ──────────────────────────────
