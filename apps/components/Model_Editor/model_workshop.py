@@ -5428,6 +5428,14 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         self.open_dff_btn.clicked.connect(self._open_dff_standalone)
         layout.addWidget(self.open_dff_btn)
 
+        # GL Model Viewer button
+        self.gl_viewer_btn = QPushButton()
+        self.gl_viewer_btn.setFont(self.button_font)
+        self.gl_viewer_btn.setText("3D View")
+        self.gl_viewer_btn.setToolTip("Open GL Model Viewer (hardware 3D)")
+        self.gl_viewer_btn.clicked.connect(self._open_gl_viewer)
+        layout.addWidget(self.gl_viewer_btn)
+
         # Open TXD button — loads TXD for the current DFF, or browses for one
         self.open_txd_btn = QPushButton()
         self.open_txd_btn.setFont(self.button_font)
@@ -9299,6 +9307,20 @@ class ModelWorkshop(ToolMenuMixin, QWidget): #vers 2  # renamed from ModelWorksh
         # Browse for TXD file
         self._load_txd_into_workshop()
 
+
+    def _open_gl_viewer(self): #vers 1
+        """Launch the OpenGL model viewer with current DFF/TXD if loaded."""
+        try:
+            from apps.components.Model_Viewer.model_viewer import open_model_viewer
+            mw = getattr(self, 'main_window', None)
+            dff_path = getattr(self, '_current_dff_path', None)
+            txd_path = getattr(self, '_current_txd_path', None)
+            win, viewer = open_model_viewer(mw, dff_path, txd_path)
+            # Keep reference so window isn't GC'd
+            self._gl_viewer_win = win
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self._set_status(f"GL Viewer error: {e}")
 
     def _open_dff_standalone(self): #vers 3
         """Open DFF + optionally TXD. Remembers last directory."""
