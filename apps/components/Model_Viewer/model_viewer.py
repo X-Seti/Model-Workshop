@@ -263,34 +263,38 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         gluPerspective(45.0, aspect, 0.01, 50000.0)
         glMatrixMode(GL_MODELVIEW)
 
-    def paintGL(self): #vers 1
+    def paintGL(self): #vers 2
         if not OPENGL_AVAILABLE: return
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         glTranslatef(self._pan_x, self._pan_y, -self._dist)
         glRotatef(self._pitch, 1, 0, 0)
         glRotatef(self._yaw,   0, 1, 0)
-        # GTA Z-up → OpenGL Y-up
-        glRotatef(-90, 1, 0, 0)
 
+        # Grid drawn in OpenGL world space (Y-up) — before GTA rotation
         if self._show_grid:
             self._draw_grid()
-            self._draw_axes()
 
         if not self._vertices:
+            if self._show_grid: self._draw_axes()
             return
+
+        # GTA Z-up/Y-forward → OpenGL Y-up/Z-forward (model only)
+        glPushMatrix()
+        glRotatef(-90, 1, 0, 0)
+        if self._show_grid: self._draw_axes()
 
         if self._backface_cull:
             glEnable(GL_CULL_FACE); glCullFace(GL_BACK)
         else:
             glDisable(GL_CULL_FACE)
 
-        # Update light position in eye space
         glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
 
         if   self._mode == 'wireframe': self._draw_wireframe()
         elif self._mode == 'solid':     self._draw_solid()
         elif self._mode == 'textured':  self._draw_textured()
+        glPopMatrix()
 
     # ── draw calls ───────────────────────────────────────────
 
@@ -804,6 +808,14 @@ class ModelViewer(ToolMenuMixin, QWidget):
         lay.setContentsMargins(*self.get_panel_margins())
         lay.setSpacing(self.panelspacing)
 
+        lbl_i = QLabel("IMG Entries (DFF)"); lbl_i.setFont(self.panel_font)
+        lay.addWidget(lbl_i)
+
+        self._img_list = QListWidget()
+        self._img_list.setFont(self.panel_font)
+        self._img_list.itemDoubleClicked.connect(self._on_img_entry_dclicked)
+        lay.addWidget(self._img_list, 2)
+
         lbl_g = QLabel("Geometries"); lbl_g.setFont(self.panel_font)
         lay.addWidget(lbl_g)
 
@@ -1047,6 +1059,48 @@ class ModelViewer(ToolMenuMixin, QWidget):
         except Exception as e:
             self._set_status(f"TXD error: {e}")
 
+    def load_img(self, img): #vers 1
+        """Populate IMG list with DFF entries for quick selection."""
+        self._current_img = img
+        self._img_list.clear()
+        if not img or not hasattr(img, 'entries'):
+            return
+        for entry in img.entries:
+            if entry.name.lower().endswith('.dff'):
+                item = QListWidgetItem(entry.name)
+                item.setData(Qt.ItemDataRole.UserRole, entry)
+                self._img_list.addItem(item)
+        count = self._img_list.count()
+        self._set_status(f"IMG: {count} DFF entries loaded")
+
+    def _on_img_entry_dclicked(self, item): #vers 1
+        """Double-click IMG entry — extract and load DFF + auto TXD."""
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        img   = getattr(self, '_current_img', None)
+        if not entry or not img:
+            return
+        try:
+            import tempfile, os
+            data = img.read_entry_data(entry)
+            if not data:
+                return
+            tmp_dir  = tempfile.mkdtemp()
+            dff_path = os.path.join(tmp_dir, entry.name)
+            with open(dff_path,'wb') as f: f.write(data)
+            self.load_dff(dff_path)
+            # Auto TXD — same stem in same IMG
+            stem = os.path.splitext(entry.name)[0].lower()
+            for e in img.entries:
+                if e.name.lower() == stem + '.txd':
+                    txd_data = img.read_entry_data(e)
+                    if txd_data:
+                        txd_path = os.path.join(tmp_dir, e.name)
+                        with open(txd_path,'wb') as f: f.write(txd_data)
+                        self.load_txd(txd_path)
+                    break
+        except Exception as ex:
+            self._set_status(f"IMG load error: {ex}")
+
     def _populate_geom_list(self): #vers 1
         self._geom_list.clear()
         if not self._dff_model: return
@@ -1200,12 +1254,15 @@ class ModelViewer(ToolMenuMixin, QWidget):
 #  Entry point
 # ─────────────────────────────────────────────────────────────
 
-def open_model_viewer(main_window=None, dff_path=None, txd_path=None): #vers 1
+def open_model_viewer(main_window=None, dff_path=None, txd_path=None, img=None): #vers 2
     """Open the Model Viewer as a floating window."""
     viewer = ModelViewer(None, main_window)
-    viewer.show()
     if dff_path: viewer.load_dff(dff_path)
     if txd_path: viewer.load_txd(txd_path)
+    if img:      viewer.load_img(img)
+    viewer.show()
+    viewer.raise_()
+    viewer.activateWindow()
     return viewer, viewer   # (win, viewer) compatible with callers
 
 
