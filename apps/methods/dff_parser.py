@@ -276,14 +276,21 @@ class DFFParser:
                     while i + 2 < len(indices):
                         v0, m = indices[i]; v1, _ = indices[i+1]; v2, _ = indices[i+2]
                         tris.append(Triangle(v0, v1, v2, m)); i += 3
-                else:               # triangle strip
+                else:               # triangle strip with restart markers
+                    # Repeated index = strip restart; reset winding counter
+                    seg_pos = 0   # position within current strip segment
                     for i in range(len(indices) - 2):
                         v0, m = indices[i]; v1, _ = indices[i+1]; v2, _ = indices[i+2]
-                        if v0 != v1 and v1 != v2 and v0 != v2:
-                            if i % 2 == 0:
-                                tris.append(Triangle(v0, v1, v2, m))
-                            else:
-                                tris.append(Triangle(v0, v2, v1, m))
+                        # Degenerate = restart marker; reset segment position
+                        if v0 == v1 or v1 == v2 or v0 == v2:
+                            if v0 == v1:   # restart: skip and reset counter
+                                seg_pos = 0
+                            continue
+                        if seg_pos % 2 == 0:
+                            tris.append(Triangle(v0, v1, v2, m))
+                        else:
+                            tris.append(Triangle(v0, v2, v1, m))
+                        seg_pos += 1
                 return tris
             pos = dp + sz
         return []
