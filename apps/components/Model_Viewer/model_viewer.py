@@ -212,6 +212,8 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         self._backface_cull = True
         self._show_grid     = True
         self._use_prelight  = False
+        self._assembly_mode = False
+        self._all_geoms     = []
         self._light_dir     = (1.0, 2.0, 1.5, 0.0)   # GL_POSITION homogeneous
         self._ambient       = 0.30
         self._diffuse       = 0.85
@@ -291,7 +293,9 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
 
         glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
 
-        if   self._mode == 'wireframe': self._draw_wireframe()
+        if getattr(self,'_assembly_mode',False) and getattr(self,'_all_geoms',[]):
+            self._draw_assembly()
+        elif self._mode == 'wireframe': self._draw_wireframe()
         elif self._mode == 'solid':     self._draw_solid()
         elif self._mode == 'textured':  self._draw_textured()
         glPopMatrix()
@@ -321,12 +325,16 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         glColor3f(0,0,1); glVertex3f(0,0,0); glVertex3f(0,0,r)
         glEnd()
 
-    def _face_color(self, mat_id): #vers 1
-        """Return (r,g,b) 0-1 for a material."""
+    def _face_color(self, mat_id): #vers 2
+        """Return (r,g,b) 0-1 for a material. Black (0,0,0) = fallback grey."""
         mats = self._materials
         if mats and 0 <= mat_id < len(mats):
             c = mats[mat_id].colour
-            return getattr(c,'r',180)/255, getattr(c,'g',180)/255, getattr(c,'b',180)/255
+            r = getattr(c,'r',180); g = getattr(c,'g',180); b = getattr(c,'b',180)
+            # Pure black with no texture = placeholder, use grey
+            if r == 0 and g == 0 and b == 0 and not getattr(mats[mat_id],'texture_name',''):
+                return 0.55, 0.55, 0.55
+            return r/255, g/255, b/255
         return 0.7, 0.7, 0.7
 
     def _emit_verts(self, v1, v2, v3, use_prelit=False, use_uv=False): #vers 1
@@ -467,6 +475,64 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
 
     def set_show_grid(self, v: bool): #vers 1
         self._show_grid = v; self.update()
+
+    def load_all_geometries(self, geometries, materials_list, frames, atomics): #vers 1
+        """Load all geometries with world transforms for assembly view."""
+        self._all_geoms = []
+        for i, geom in enumerate(geometries):
+            atomic = next((a for a in atomics if a.geometry_index == i), None)
+            frame_idx = atomic.frame_index if atomic else -1
+            rot, tx, ty, tz = self._calc_world_matrix(frames, frame_idx)
+            verts = [(rot[0]*v.x+rot[1]*v.y+rot[2]*v.z+tx,
+                      rot[3]*v.x+rot[4]*v.y+rot[5]*v.z+ty,
+                      rot[6]*v.x+rot[7]*v.y+rot[8]*v.z+tz) for v in geom.vertices]
+            norms = [(rot[0]*n.x+rot[1]*n.y+rot[2]*n.z,
+                      rot[3]*n.x+rot[4]*n.y+rot[5]*n.z,
+                      rot[6]*n.x+rot[7]*n.y+rot[8]*n.z) for n in geom.normals] if geom.normals else []
+            uvs   = [(u.u,u.v) for u in geom.uv_layers[0]] if geom.uv_layers else []
+            tris  = [(t.v1,t.v2,t.v3,t.material_id) for t in geom.triangles]
+            prelit= [(c.r,c.g,c.b,c.a) for c in geom.colors] if geom.colors else []
+            self._all_geoms.append((verts,norms,uvs,tris,geom.materials,prelit))
+        all_pts=[p for g in self._all_geoms for p in g[0]]
+        if all_pts:
+            xs=[p[0] for p in all_pts]; ys=[p[1] for p in all_pts]
+            diag=math.sqrt(max(1,(max(xs)-min(xs))**2+(max(ys)-min(ys))**2))
+            self._dist=max(diag*2.0,2.0)
+            self._pan_x=-(max(xs)+min(xs))/2; self._pan_y=-(max(ys)+min(ys))/2
+        self.update()
+
+    def _calc_world_matrix(self, frames, frame_idx): #vers 1
+        """Compute cumulative world matrix for a frame chain."""
+        r=[1,0,0,0,1,0,0,0,1]; tx=ty=tz=0.0
+        visited=set(); idx=frame_idx; chain=[]
+        while 0<=idx<len(frames) and idx not in visited:
+            visited.add(idx); chain.append(frames[idx]); idx=frames[idx].parent_index
+        for frame in reversed(chain):
+            fr=frame.rotation; fp=frame.position
+            nr=[r[0]*fr[0]+r[1]*fr[3]+r[2]*fr[6],r[0]*fr[1]+r[1]*fr[4]+r[2]*fr[7],r[0]*fr[2]+r[1]*fr[5]+r[2]*fr[8],
+                r[3]*fr[0]+r[4]*fr[3]+r[5]*fr[6],r[3]*fr[1]+r[4]*fr[4]+r[5]*fr[7],r[3]*fr[2]+r[4]*fr[5]+r[5]*fr[8],
+                r[6]*fr[0]+r[7]*fr[3]+r[8]*fr[6],r[6]*fr[1]+r[7]*fr[4]+r[8]*fr[7],r[6]*fr[2]+r[7]*fr[5]+r[8]*fr[8]]
+            ntx=r[0]*fp.x+r[1]*fp.y+r[2]*fp.z+tx; nty=r[3]*fp.x+r[4]*fp.y+r[5]*fp.z+ty
+            ntz=r[6]*fp.x+r[7]*fp.y+r[8]*fp.z+tz; r,tx,ty,tz=nr,ntx,nty,ntz
+        return r,tx,ty,tz
+
+    def set_assembly_mode(self, enabled: bool): #vers 1
+        self._assembly_mode = enabled; self.update()
+
+    def _draw_assembly(self): #vers 1
+        """Draw all geometries at their world positions."""
+        if not OPENGL_AVAILABLE: return
+        for verts,norms,uvs,tris,mats,prelit in getattr(self,'_all_geoms',[]):
+            old_v,old_n,old_u,old_t,old_m,old_p = (
+                self._vertices,self._normals,self._uvs,
+                self._triangles,self._materials,self._prelit)
+            self._vertices=verts; self._normals=norms; self._uvs=uvs
+            self._triangles=tris; self._materials=mats; self._prelit=prelit
+            if   self._mode=='wireframe': self._draw_wireframe()
+            elif self._mode=='solid':     self._draw_solid()
+            elif self._mode=='textured':  self._draw_textured()
+            (self._vertices,self._normals,self._uvs,
+             self._triangles,self._materials,self._prelit) = (old_v,old_n,old_u,old_t,old_m,old_p)
 
     def set_prelight(self, v: bool): #vers 1
         self._use_prelight = v; self.update()
@@ -735,39 +801,58 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
         lay.addSpacing(8)
 
-        # Render mode (exclusive)
+        # Render mode (exclusive) — compact 44px buttons
         self._mode_group = QButtonGroup(self); self._mode_group.setExclusive(True)
         for label, mode, iname in [
             ("Wire","wireframe","wireframe"),
             ("Solid","solid","solid"),
             ("Tex","textured","texture"),
         ]:
-            b = QPushButton(label); b.setCheckable(True); b.setFixedHeight(28); b.setFixedWidth(52)
+            b = QPushButton(label); b.setCheckable(True)
+            b.setFixedHeight(26); b.setFixedWidth(44); b.setFont(self.button_font)
             b.setToolTip(f"{mode.capitalize()} render mode")
-            ico = _icon(iname,16)
-            if ico: b.setIcon(ico); b.setIconSize(QSize(16,16))
+            ico = _icon(iname,14)
+            if ico: b.setIcon(ico); b.setIconSize(QSize(14,14))
             b.clicked.connect(lambda _=False, m=mode: self._set_mode(m))
             self._mode_group.addButton(b); lay.addWidget(b)
             if mode == 'solid': b.setChecked(True)
 
-        lay.addSpacing(8)
+        lay.addSpacing(4)
 
-        # Toggles
-        self._cull_btn = _tbtn("Cull","Backface culling ON/OFF",
-                               self.viewport.set_backface_cull,'backface',True,True,52)
-        self._grid_btn = _tbtn("Grid","Toggle grid",
-                               self.viewport.set_show_grid,'grid',True,True,52)
-        self._prelit_btn = _tbtn("PreLit","Vertex prelighting ON/OFF",
-                                 self.viewport.set_prelight,'shading',True,False,52)
-        lay.addWidget(self._cull_btn)
-        lay.addWidget(self._grid_btn)
-        lay.addWidget(self._prelit_btn)
+        # Toggle buttons — 36px compact
+        for attr, label, tip, cb, iname, ch, chk in [
+            ('_cull_btn',   'Cull', 'Backface culling',    self.viewport.set_backface_cull, 'backface', True, True),
+            ('_grid_btn',   'Grid', 'Toggle grid',         self.viewport.set_show_grid,    'grid',     True, True),
+            ('_prelit_btn', 'Pre',  'Vertex prelighting',  self.viewport.set_prelight,     'shading',  True, False),
+        ]:
+            b = QPushButton(label); b.setFixedHeight(26); b.setFixedWidth(36)
+            b.setFont(self.button_font); b.setToolTip(tip)
+            ico = _icon(iname,14)
+            if ico: b.setIcon(ico); b.setIconSize(QSize(14,14))
+            b.setCheckable(ch); b.setChecked(chk if ch else False)
+            if ch: b.toggled.connect(cb)
+            else: b.clicked.connect(cb)
+            setattr(self, attr, b); lay.addWidget(b)
 
-        lay.addSpacing(8)
-        reset_btn = _tbtn("Reset","Reset camera",self.viewport.reset_camera,'reset')
-        lay.addWidget(reset_btn)
-        light_btn = _tbtn("Light","Light setup",self._light_setup_dialog,'light')
-        lay.addWidget(light_btn)
+        lay.addSpacing(4)
+        for label, tip, cb, iname in [
+            ("reL","Reset camera",self.viewport.reset_camera,'reset'),
+            ("Light","Light setup",self._light_setup_dialog,'light'),
+        ]:
+            b = QPushButton(label); b.setFixedHeight(26); b.setFont(self.button_font)
+            b.setToolTip(tip)
+            ico = _icon(iname,14)
+            if ico: b.setIcon(ico); b.setIconSize(QSize(14,14))
+            b.clicked.connect(cb); lay.addWidget(b)
+
+        lay.addSpacing(4)
+        self._assemble_btn = QPushButton("All")
+        self._assemble_btn.setFixedHeight(26); self._assemble_btn.setFixedWidth(36)
+        self._assemble_btn.setCheckable(True); self._assemble_btn.setChecked(False)
+        self._assemble_btn.setFont(self.button_font)
+        self._assemble_btn.setToolTip("Show all parts assembled at world positions")
+        self._assemble_btn.toggled.connect(self._toggle_assembly_mode)
+        lay.addWidget(self._assemble_btn)
 
         lay.addStretch()
 
@@ -1001,6 +1086,16 @@ class ModelViewer(ToolMenuMixin, QWidget):
         btn = self.menu_toggle_btn
         pm.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
+    def _toggle_assembly_mode(self, enabled: bool): #vers 1
+        self.viewport.set_assembly_mode(enabled)
+        if enabled and self._dff_model:
+            self.viewport.load_all_geometries(
+                self._dff_model.geometries,
+                [g.materials for g in self._dff_model.geometries],
+                self._dff_model.frames,
+                self._dff_model.atomics)
+        self._geom_list.setEnabled(not enabled)
+
     def _set_mode(self, mode: str): #vers 1
         self.viewport.set_render_mode(mode)
 
@@ -1026,13 +1121,17 @@ class ModelViewer(ToolMenuMixin, QWidget):
             self._last_dir = os.path.dirname(path)
             self.load_txd(path)
 
-    def load_dff(self, path: str): #vers 1
+    def load_dff(self, path: str): #vers 2
         try:
             from apps.methods.dff_parser import load_dff
             model = load_dff(path)
             if not model or not model.geometries:
                 self._set_status(f"Failed: {os.path.basename(path)}"); return
             self._dff_model = model
+            self._current_dff_path = path
+            # Clear texture cache when loading new DFF
+            self.viewport.clear_textures()
+            self._tex_list.clear()
             self.MV_settings.add_recent(path); self.MV_settings.save()
             self._populate_geom_list()
             self._geom_list.setCurrentRow(0)
