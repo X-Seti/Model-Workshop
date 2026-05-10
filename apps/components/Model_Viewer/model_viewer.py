@@ -788,11 +788,20 @@ class ModelViewer(ToolMenuMixin, QWidget):
                 return fn(size, ic) if fn else None
             except Exception: return None
 
+        from PyQt6.QtWidgets import QToolButton
         def _tbtn(text, tip, cb, icon_name=None, checkable=False, checked=False, w=None):
-            b = QPushButton(text); b.setToolTip(tip); b.setFixedHeight(28)
-            if w: b.setFixedWidth(w)
+            b = QToolButton(); b.setToolTip(tip); b.setFixedHeight(28)
+            b.setFont(self.button_font)
             ico = _icon(icon_name) if icon_name else None
-            if ico: b.setIcon(ico); b.setIconSize(QSize(16,16))
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(16,16))
+                b.setText(text)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            else:
+                b.setText(text)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            if w: b.setFixedWidth(w)
             if checkable: b.setCheckable(True); b.setChecked(checked)
             if checkable: b.toggled.connect(cb)
             else:         b.clicked.connect(cb)
@@ -825,18 +834,25 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
         lay.addSpacing(8)
 
-        # Render mode (exclusive) — compact 44px buttons
+        # Render mode (exclusive)
         self._mode_group = QButtonGroup(self); self._mode_group.setExclusive(True)
+        from PyQt6.QtWidgets import QToolButton as _QTB
         for label, mode, iname in [
             ("Wire","wireframe","wireframe"),
             ("Solid","solid","solid"),
             ("Tex","textured","texture"),
         ]:
-            b = QPushButton(label); b.setCheckable(True)
-            b.setFixedHeight(26); b.setFixedWidth(44); b.setFont(self.button_font)
+            b = _QTB(); b.setCheckable(True); b.setFixedHeight(26)
+            b.setFont(self.button_font)
             b.setToolTip(f"{mode.capitalize()} render mode")
             ico = _icon(iname,14)
-            if ico: b.setIcon(ico); b.setIconSize(QSize(14,14))
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(14,14))
+                b.setText(label)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            else:
+                b.setText(label)
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             b.clicked.connect(lambda _=False, m=mode: self._set_mode(m))
             self._mode_group.addButton(b); lay.addWidget(b)
             if mode == 'solid': b.setChecked(True)
@@ -849,10 +865,14 @@ class ModelViewer(ToolMenuMixin, QWidget):
             ('_grid_btn',   'Grid', 'Toggle grid',         self.viewport.set_show_grid,    'grid',     True, True),
             ('_prelit_btn', 'Pre',  'Vertex prelighting',  self.viewport.set_prelight,     'shading',  True, False),
         ]:
-            b = QPushButton(label); b.setFixedHeight(26); b.setFixedWidth(36)
-            b.setFont(self.button_font); b.setToolTip(tip)
+            b = _QTB(); b.setFixedHeight(26); b.setFont(self.button_font); b.setToolTip(tip)
             ico = _icon(iname,14)
-            if ico: b.setIcon(ico); b.setIconSize(QSize(14,14))
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(14,14)); b.setText(label)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            else:
+                b.setText(label)
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             b.setCheckable(ch); b.setChecked(chk if ch else False)
             if ch: b.toggled.connect(cb)
             else: b.clicked.connect(cb)
@@ -918,36 +938,64 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
     # ── left panel — geometry + texture lists ─────────────────
 
-    def _create_left_panel(self): #vers 1
+    def _make_section_header(self, title, search_cb=None): #vers 1
+        """Collapsible section header row with optional search box."""
+        row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0,0,0,0); rl.setSpacing(2)
+        lbl = QLabel(title); lbl.setFont(self.panel_font); rl.addWidget(lbl, 1)
+        if search_cb:
+            from PyQt6.QtWidgets import QLineEdit
+            se = QLineEdit(); se.setPlaceholderText("Filter…")
+            se.setFixedHeight(20); se.setMaximumWidth(90)
+            se.textChanged.connect(search_cb)
+            rl.addWidget(se)
+        return row
+
+    def _filter_img_list(self, text): #vers 1
+        ft = text.lower()
+        for i in range(self._img_list.count()):
+            item = self._img_list.item(i)
+            item.setHidden(bool(ft) and ft not in item.text().lower())
+
+    def _create_left_panel(self): #vers 2
         panel = QFrame(); panel.setFrameStyle(QFrame.Shape.StyledPanel)
-        panel.setMinimumWidth(180); panel.setMaximumWidth(260)
-        lay = QVBoxLayout(panel)
-        lay.setContentsMargins(*self.get_panel_margins())
-        lay.setSpacing(self.panelspacing)
+        panel.setMinimumWidth(180); panel.setMaximumWidth(280)
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(*self.get_panel_margins())
+        outer.setSpacing(2)
 
-        lbl_i = QLabel("IMG Entries (DFF)"); lbl_i.setFont(self.panel_font)
-        lay.addWidget(lbl_i)
+        # Vertical splitter — all three sections resizable
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        outer.addWidget(splitter, 1)
 
+        # ── IMG Entries section ──
+        img_sec = QWidget(); img_lay = QVBoxLayout(img_sec); img_lay.setContentsMargins(0,0,0,0); img_lay.setSpacing(2)
+        img_lay.addWidget(self._make_section_header("IMG Entries (DFF)", self._filter_img_list))
         self._img_list = QListWidget()
         self._img_list.setFont(self.panel_font)
         self._img_list.itemDoubleClicked.connect(self._on_img_entry_dclicked)
-        lay.addWidget(self._img_list, 2)
+        img_lay.addWidget(self._img_list)
+        splitter.addWidget(img_sec)
 
-        lbl_g = QLabel("Geometries"); lbl_g.setFont(self.panel_font)
-        lay.addWidget(lbl_g)
-
+        # ── Geometries section ──
+        geom_sec = QWidget(); gl = QVBoxLayout(geom_sec); gl.setContentsMargins(0,0,0,0); gl.setSpacing(2)
+        gl.addWidget(self._make_section_header("Geometries"))
         self._geom_list = QListWidget()
         self._geom_list.setFont(self.panel_font)
         self._geom_list.currentRowChanged.connect(self._on_geom_selected)
-        lay.addWidget(self._geom_list, 2)
+        gl.addWidget(self._geom_list)
+        splitter.addWidget(geom_sec)
 
-        lbl_t = QLabel("Textures"); lbl_t.setFont(self.panel_font)
-        lay.addWidget(lbl_t)
-
+        # ── Textures section with thumbnails ──
+        tex_sec = QWidget(); tl = QVBoxLayout(tex_sec); tl.setContentsMargins(0,0,0,0); tl.setSpacing(2)
+        tl.addWidget(self._make_section_header("Textures"))
         self._tex_list = QListWidget()
         self._tex_list.setFont(self.panel_font)
-        lay.addWidget(self._tex_list, 1)
+        self._tex_list.setIconSize(QSize(32,32))
+        self._tex_list.setViewMode(QListWidget.ViewMode.ListMode)
+        tl.addWidget(self._tex_list)
+        splitter.addWidget(tex_sec)
 
+        splitter.setSizes([200, 180, 150])
         return panel
 
     # ── centre panel — OpenGL viewport ────────────────────────
@@ -1181,21 +1229,42 @@ class ModelViewer(ToolMenuMixin, QWidget):
             import traceback; traceback.print_exc()
             self._set_status(f"Error: {e}")
 
-    def load_txd(self, path: str): #vers 1
+    def load_txd(self, path: str): #vers 2
         try:
             from apps.methods.txd_parser import parse_txd
+            from PyQt6.QtGui import QIcon, QImage, QPixmap
+            from PyQt6.QtWidgets import QListWidgetItem
+            from PyQt6.QtCore import Qt, QTimer
             with open(path,'rb') as f: data=f.read()
             textures = parse_txd(data)
             if not textures:
-                self._set_status(f"No textures: {os.path.basename(path)}"); return
-            self.viewport._upload_textures(textures)
+                self._set_status(f'No textures: {os.path.basename(path)}'); return
+            # GL upload — defer if widget not yet shown
+            def _do_upload():
+                try: self.viewport._upload_textures(textures); self.viewport.update()
+                except Exception as ue: self._set_status(f'GL upload: {ue}')
+            if self.viewport.isVisible():
+                _do_upload()
+            else:
+                QTimer.singleShot(400, _do_upload)
+            # Texture list with thumbnails
             self._tex_list.clear()
             for t in textures:
-                self._tex_list.addItem(f"{t['name']}  {t['width']}×{t['height']}")
-            self._set_status(f"Textures: {len(textures)} from {os.path.basename(path)}")
-            self.viewport.update()
+                item = QListWidgetItem(f"{t['name']}  {t['width']}\xd7{t['height']}")
+                rgba=t.get('rgba_data',b''); w=t.get('width',0); h=t.get('height',0)
+                if rgba and w>0 and h>0:
+                    try:
+                        img=QImage(rgba,w,h,w*4,QImage.Format.Format_RGBA8888)
+                        px=QPixmap.fromImage(img).scaled(32,32,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
+                        item.setIcon(QIcon(px))
+                    except Exception: pass
+                self._tex_list.addItem(item)
+            self._set_status(f'Textures: {len(textures)} from {os.path.basename(path)}')
         except Exception as e:
-            self._set_status(f"TXD error: {e}")
+            import traceback; traceback.print_exc()
+            self._set_status(f'TXD error: {e}')
 
     def load_img(self, img): #vers 1
         """Populate IMG list with DFF entries for quick selection."""
