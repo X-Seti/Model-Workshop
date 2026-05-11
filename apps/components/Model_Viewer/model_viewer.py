@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 #this belongs in apps/components/Model_Viewer/model_viewer.py - Version: 2
 # X-Seti - May10 2026 - IMG Factory 1.6 - DFF Model Viewer
 """
