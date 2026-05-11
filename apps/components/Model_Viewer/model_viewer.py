@@ -794,9 +794,10 @@ class ModelViewer(ToolMenuMixin, QWidget):
             if wx >= 0 and wy >= 0:
                 self.move(wx, wy)
 
-        if self.standalone_mode and parent is None:
+        if self.standalone_mode:
             self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        # Docked: no special flags needed — parent widget handles containment
+        else:
+            self.setWindowFlags(Qt.WindowType.Widget)
 
         if parent:
             p = parent.pos(); self.move(p.x()+50, p.y()+80)
@@ -1017,7 +1018,7 @@ class ModelViewer(ToolMenuMixin, QWidget):
             self.properties_btn.setIconSize(QSize(20, 20))
             self.properties_btn.setFixedSize(35, 35)
             self.properties_btn.setToolTip("Theme Settings")
-            self.properties_btn.clicked.connect(self._launch_theme_settings)
+            self.properties_btn.clicked.connect(self._show_workshop_settings)
             layout.addWidget(self.properties_btn)
 
             self.minimize_btn = QPushButton(); self.minimize_btn.setFixedSize(32,28)
@@ -1236,16 +1237,6 @@ class ModelViewer(ToolMenuMixin, QWidget):
     def _show_about(self): #vers 1
         QMessageBox.about(self, App_name, f"{App_name}\n{Build} — {App_build}\n\nOpenGL DFF viewer for GTA models.")
 
-    def _launch_theme_settings(self): #vers 1
-        """Open theme/settings dialog from properties button."""
-        try:
-            if self.app_settings and hasattr(self.app_settings, 'show_settings_dialog'):
-                self.app_settings.show_settings_dialog(self)
-            else:
-                self._show_workshop_settings()
-        except Exception as e:
-            self._show_workshop_settings()
-
     # - theme / icons
 
     def _apply_theme(self): #vers 1
@@ -1287,31 +1278,22 @@ class ModelViewer(ToolMenuMixin, QWidget):
         btn = self.menu_toggle_btn
         pm.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
-    def _reload_assembly(self): #vers 1
-        if not self._dff_model: return
-        damaged = getattr(self, '_damage_mode', False)
-        self.viewport.load_all_geometries(
-            self._dff_model.geometries,
-            [g.materials for g in self._dff_model.geometries],
-            self._dff_model.frames,
-            self._dff_model.atomics,
-            damaged=damaged)
-
-    def _toggle_assembly_mode(self, enabled: bool): #vers 3
+    def _toggle_assembly_mode(self, enabled: bool): #vers 2
         self.viewport.set_assembly_mode(enabled)
-        if enabled:
-            self._reload_assembly()
-        else:
-            if self._dff_model and self._current_geom < len(self._dff_model.geometries):
-                g = self._dff_model.geometries[self._current_geom]
-                self.viewport.load_geometry(g, g.materials)
+        if enabled and self._dff_model:
+            damaged = getattr(self,'_damage_mode',False)
+            self.viewport.load_all_geometries(
+                self._dff_model.geometries,
+                [g.materials for g in self._dff_model.geometries],
+                self._dff_model.frames,
+                self._dff_model.atomics,
+                damaged=damaged)
         self._geom_list.setEnabled(not enabled)
 
-    def _toggle_damage_mode(self, enabled: bool): #vers 2
+    def _toggle_damage_mode(self, enabled: bool): #vers 1
         self._damage_mode = enabled
-        if getattr(self, '_assemble_btn', None) and self._assemble_btn.isChecked():
-            self._reload_assembly()
-
+        if getattr(self,'_assemble_btn',None) and self._assemble_btn.isChecked():
+            self._toggle_assembly_mode(True)
 
     def _set_mode(self, mode: str): #vers 1
         self.viewport.set_render_mode(mode)
