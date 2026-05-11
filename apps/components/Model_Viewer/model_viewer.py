@@ -805,10 +805,14 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
         self.setup_ui()
         self._apply_theme()
-        # App icon
+        # App icon — colour from theme bg_panel so it updates with theme changes
         try:
             from apps.methods.imgfactory_svg_icons import SVGIconFactory as _SIF
-            self.setWindowIcon(_SIF.mesh_icon(32, '#4a9fd4'))
+            _ic = '#4a9fd4'
+            if self.app_settings:
+                _colors = self.app_settings.get_theme_colors()
+                _ic = _colors.get('bg_panel', _colors.get('accent_primary', '#4a9fd4'))
+            self.setWindowIcon(_SIF.mesh_icon(32, _ic))
         except Exception:
             pass
 
@@ -1264,10 +1268,19 @@ class ModelViewer(ToolMenuMixin, QWidget):
         except Exception: pass
         return '#ffffff'
 
-    def _refresh_icons(self): #vers 1
+    def _refresh_icons(self): #vers 2
         if ICONS_AVAILABLE:
             SVGIconFactory.clear_cache()
         self._apply_theme()
+        # Refresh window icon with updated theme colour
+        try:
+            _ic = '#4a9fd4'
+            if self.app_settings:
+                _colors = self.app_settings.get_theme_colors()
+                _ic = _colors.get('bg_panel', _colors.get('accent_primary', '#4a9fd4'))
+            self.setWindowIcon(SVGIconFactory.mesh_icon(32, _ic))
+        except Exception:
+            pass
 
     def _on_menu_btn_clicked(self): #vers 1
         if hasattr(self, '_show_topbar_menu'):
