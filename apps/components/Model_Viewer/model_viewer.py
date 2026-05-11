@@ -1236,6 +1236,16 @@ class ModelViewer(ToolMenuMixin, QWidget):
     def _show_about(self): #vers 1
         QMessageBox.about(self, App_name, f"{App_name}\n{Build} — {App_build}\n\nOpenGL DFF viewer for GTA models.")
 
+    def _launch_theme_settings(self): #vers 1
+        """Open theme/settings dialog from properties button."""
+        try:
+            if self.app_settings and hasattr(self.app_settings, 'show_settings_dialog'):
+                self.app_settings.show_settings_dialog(self)
+            else:
+                self._show_workshop_settings()
+        except Exception as e:
+            self._show_workshop_settings()
+
     # - theme / icons
 
     def _apply_theme(self): #vers 1
