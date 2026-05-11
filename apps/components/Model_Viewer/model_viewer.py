@@ -1082,11 +1082,10 @@ class ModelViewer(ToolMenuMixin, QWidget):
             ("Solid",     "solid",     "solid"),
             ("Textured",  "textured",  "texture"),
         ]:
-            b = _btn(label, f"{mode.capitalize()} render mode", lambda _=False,m=mode: self._set_mode(m), iname)
-            b.setCheckable(True)
-            b.clicked.connect(lambda _=False, m=mode: self._set_mode(m))
+            b = _btn(label, f"{mode.capitalize()} render mode",
+                     lambda checked=False, m=mode: (self._set_mode(m) if checked else None),
+                     iname, checkable=True, checked=(mode=='solid'))
             self._mode_group.addButton(b); lay.addWidget(b)
-            if mode == 'solid': b.setChecked(True)
 
         lay.addSpacing(6)
 
