@@ -2076,7 +2076,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         from apps.components.Model_Editor.depends.col_workshop_classes import COLModel, COLHeader, COLVersion, COLBounds
         m = COLModel()
         m.name = name.strip(); m.version = COLVersion.COL_1
-        if not self.current_col_file: return
+        if not getattr(self, "current_col_file", None): return
         self.current_col_file.models.append(m)
         self._populate_collision_list()
         self.collision_list.selectRow(self.collision_list.rowCount()-1)
@@ -2084,7 +2084,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _delete_selected_model(self): #vers 2
         """Delete selected collision model(s) — uses currentRow() for reliability."""
-        if not self.current_col_file: return
+        if not getattr(self, "current_col_file", None): return
         models = getattr(self.current_col_file, 'models', [])
         if not models: return
 
@@ -2151,7 +2151,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _paste_model_from_clipboard(self): #vers 1
         if not hasattr(self, '_clipboard_model') or not self._clipboard_model: return
-        if not self.current_col_file: return
+        if not getattr(self, "current_col_file", None): return
         import copy
         m = copy.deepcopy(self._clipboard_model)
         m.name = m.name + "_paste"
@@ -2913,7 +2913,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             return
 
         # COL mode: enter face-paint mode
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, "No Model",
                 "Load a DFF or COL file first.")
@@ -3289,7 +3289,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         """Return the currently selected COLModel or None.
         Uses currentRow() on the active (visible) list widget — more reliable
         than selectedRows() which can fail with custom delegates."""
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             return None
         models = getattr(self.current_col_file, 'models', [])
         if not models:
@@ -3326,7 +3326,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _create_new_surface(self): #vers 1
         """Add a new empty COL model to the loaded file."""
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "No File", "Load a COL file first.")
             return
@@ -3384,7 +3384,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             if not names:
                 QMessageBox.warning(self, "No Textures", "No texture names found in TXD.")
                 return
-            if not self.current_col_file:
+            if not getattr(self, "current_col_file", None):
                 from apps.components.Model_Editor.depends.col_workshop_loader import COLFile
                 self.current_col_file = COLFile()
                 self.current_col_file.models = []
@@ -3579,7 +3579,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         col_ver_map = [COLVersion.COL_1, COLVersion.COL_2, COLVersion.COL_3]
         col_ver = col_ver_map[col_version.currentIndex()]
 
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             self.current_col_file = COLFile()
             self.current_col_file.models = []
 
@@ -3766,7 +3766,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
     def _compress_col(self): #vers 2
         """Mark COL file for compressed output (sets flags on export)."""
         from PyQt6.QtWidgets import QMessageBox
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             QMessageBox.warning(self, "No File", "No COL file loaded.")
             return
         QMessageBox.information(self, "COL Compression",
@@ -3956,7 +3956,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _regenerate_all_thumbnails(self): #vers 1
         """Redraw every thumbnail in both lists at current _thumb_yaw/pitch."""
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             return
         models = getattr(self.current_col_file, 'models', [])
         # Compact list
@@ -7646,9 +7646,9 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.load_txd_btn.setIconSize(QSize(16, 16))
         self.load_txd_btn.setFixedHeight(26)
         self.load_txd_btn.setMinimumWidth(80)
-        self.load_txd_btn.setToolTip("Open linked TXD in TXD Workshop")
-        self.load_txd_btn.clicked.connect(self._open_linked_txd)
-        self.load_txd_btn.setEnabled(False)
+        self.load_txd_btn.setToolTip("Open TXD — uses IDE link if available, else browse")
+        self.load_txd_btn.clicked.connect(self._open_txd_smart)
+        self.load_txd_btn.setEnabled(True)
         ide_layout.addWidget(self.load_txd_btn)
 
         self.find_in_ide_btn = QPushButton("IDE Ref")
@@ -7659,7 +7659,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.find_in_ide_btn.setMinimumWidth(72)
         self.find_in_ide_btn.setToolTip("Look up model in DAT Browser IDE entries")
         self.find_in_ide_btn.clicked.connect(self._find_in_ide)
-        self.find_in_ide_btn.setEnabled(False)
+        self.find_in_ide_btn.setEnabled(True)
         ide_layout.addWidget(self.find_in_ide_btn)
 
         # Add Objs/Col and 3D View to the same IDE row
@@ -10938,7 +10938,16 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             _QTLBL.singleShot(50, fn)
         return obj
 
+    def _open_txd_smart(self): #vers 1
+        """Open TXD — IDE link if available, else browse."""
+        obj = getattr(self, '_current_ide_obj', None)
+        if obj and getattr(obj, 'txd_name', ''):
+            self._open_linked_txd()
+        else:
+            self._open_txd_combined()
+
     def _open_linked_txd(self): #vers 1
+
         """Open the IDE-linked TXD in TXD Workshop."""
         obj = getattr(self, '_current_ide_obj', None)
         if not obj or not obj.txd_name:
@@ -10979,10 +10988,11 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             from apps.components.Txd_Editor.txd_workshop import open_txd_workshop
             open_txd_workshop(self, path)
 
-    def _find_in_ide(self): #vers 1
+    def _find_in_ide(self): #vers 2
         """Switch to DAT Browser tab and highlight this model's IDE entry."""
         obj = getattr(self, '_current_ide_obj', None)
         if not obj:
+            self._set_status("No IDE entry linked — load a model from an IMG via DAT Browser first")
             return
         mw = getattr(self, 'main_window', None)
         if not mw:
@@ -11450,7 +11460,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
     def _push_undo(self, model_index, description=""): #vers 1
         """Deep-copy model[model_index] onto undo stack before any edit."""
         import copy
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             return
         models = getattr(self.current_col_file, 'models', [])
         if model_index < 0 or model_index >= len(models):
@@ -11523,7 +11533,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _sort_models(self, key: str = 'name'): #vers 1
         """Sort collision models in place by key: 'name','version','faces','boxes','spheres','vertices'."""
-        if not self.current_col_file: return
+        if not getattr(self, "current_col_file", None): return
         models = getattr(self.current_col_file, 'models', [])
         if not models: return
 
@@ -11555,7 +11565,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _sort_models_desc(self, key: str): #vers 1
         """Sort descending (largest first)."""
-        if not self.current_col_file: return
+        if not getattr(self, "current_col_file", None): return
         models = getattr(self.current_col_file, 'models', [])
         def k(m):
             return len(getattr(m, key, []))
@@ -11568,7 +11578,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _toggle_pin_selected(self): #vers 1
         """Toggle pin (edit-lock) on selected models. Pinned models can't be deleted/renamed."""
-        if not self.current_col_file: return
+        if not getattr(self, "current_col_file", None): return
         lw = (self.mod_compact_list if getattr(self,'_col_view_mode','detail')=='detail'
               else self.collision_list)
         indices = sorted({i.row() for i in lw.selectionModel().selectedRows()})
@@ -11640,7 +11650,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                 return
 
             # Find matching models in the current COL file
-            if not self.current_col_file:
+            if not getattr(self, "current_col_file", None):
                 QMessageBox.warning(self, "No COL File", "Load a COL file first.")
                 return
 
@@ -11670,7 +11680,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
     def _remove_via_ide(self): #vers 1
         """Remove collision models NOT referenced by an IDE file (cleanup)."""
         from PyQt6.QtWidgets import QMessageBox, QFileDialog
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             QMessageBox.warning(self, "No COL File", "Load a COL file first.")
             return
 
@@ -11728,7 +11738,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         import os
         from apps.components.Model_Editor.depends.col_workshop_writer import save_col_file
 
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             QMessageBox.warning(self, "No COL File", "Load a COL file first.")
             return
 
@@ -11784,7 +11794,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         from apps.components.Model_Editor.depends.col_workshop_writer import save_col_file
 
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             QMessageBox.warning(self, "Export", "No dff file loaded.")
             return
         models = getattr(self.current_col_file, 'models', [])
@@ -11848,7 +11858,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
     def _save_file(self): #vers 2
         """Save current COL file — serialises all models via COLWriter."""
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             QMessageBox.warning(self, "Save", "No COL file loaded to save")
             return
 
@@ -14780,7 +14790,7 @@ class COLEditorDialog(QDialog): #vers 3
     def _import_col_data(self): #vers 2
         """Import one or more COL models from .col file(s) into the current archive."""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
-        if not self.current_col_file:
+        if not getattr(self, "current_col_file", None):
             # No file loaded yet — open the files directly
             self._open_file()
             return
