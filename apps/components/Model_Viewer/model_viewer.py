@@ -1136,7 +1136,7 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
 
     # - status bar
-    def _create_status_bar(self): #vers 1
+    def _create_status_bar(self): #vers 2
         bar = QFrame()
         bar.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
         bar.setFixedHeight(self.statusheight)
@@ -1144,8 +1144,23 @@ class ModelViewer(ToolMenuMixin, QWidget):
         hl.setContentsMargins(*self.get_tab_margins())
         self.status_label = QLabel("No model loaded")
         self.status_label.setFont(self.infobar_font)
-        hl.addWidget(self.status_label)
+        hl.addWidget(self.status_label, 1)
+        from PyQt6.QtWidgets import QProgressBar
+        self._progress = QProgressBar()
+        self._progress.setFixedWidth(120)
+        self._progress.setFixedHeight(14)
+        self._progress.setRange(0, 0)   # indeterminate / pulsing
+        self._progress.setVisible(False)
+        self._progress.setTextVisible(False)
+        hl.addWidget(self._progress)
         return bar
+
+    def _show_progress(self, visible: bool): #vers 1
+        if hasattr(self, '_progress'):
+            self._progress.setVisible(visible)
+            if visible:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
 
 
     # - settings dialog
@@ -1346,9 +1361,13 @@ class ModelViewer(ToolMenuMixin, QWidget):
             self._last_dir = os.path.dirname(path)
             self.load_txd(path)
 
-    def load_dff(self, path: str): #vers 3
+    def load_dff(self, path: str): #vers 4
         try:
             from apps.methods.dff_parser import load_dff
+            self._show_progress(True)
+            self._set_status(f"Parsing {os.path.basename(path)}…")
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
             model = load_dff(path)
             if not model or not model.geometries:
                 self._set_status(f"Failed: {os.path.basename(path)}"); return
@@ -1369,6 +1388,8 @@ class ModelViewer(ToolMenuMixin, QWidget):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"Error: {e}")
+        finally:
+            self._show_progress(False)
 
     def _collect_needed_textures(self): #vers 1
         """Return set of texture names the current DFF needs."""
@@ -1588,33 +1609,57 @@ class ModelViewer(ToolMenuMixin, QWidget):
         count = self._img_list.count()
         self._set_status(f"IMG: {count} DFF entries loaded")
 
-    def _on_img_entry_dclicked(self, item): #vers 1
-        """Double-click IMG entry — extract and load DFF + auto TXD."""
+    def _on_img_entry_dclicked(self, item): #vers 2
+        """Double-click IMG entry — extract and load DFF + auto TXD with progress."""
         entry = item.data(Qt.ItemDataRole.UserRole)
         img   = getattr(self, '_current_img', None)
         if not entry or not img:
             return
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt as _Qt
+        name = entry.name
         try:
-            import tempfile, os
+            import tempfile
+            # Show busy cursor + progress bar immediately
+            QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
+            self._show_progress(True)
+            self._set_status(f"Loading {name}…")
+            QApplication.processEvents()
+
+            # Step 1: Extract DFF
+            self._set_status(f"Extracting {name}…")
+            QApplication.processEvents()
             data = img.read_entry_data(entry)
             if not data:
                 return
             tmp_dir  = tempfile.mkdtemp()
-            dff_path = os.path.join(tmp_dir, entry.name)
+            dff_path = os.path.join(tmp_dir, name)
             with open(dff_path,'wb') as f: f.write(data)
+
+            # Step 2: Parse + load DFF
+            self._set_status(f"Parsing {name}…")
+            QApplication.processEvents()
             self.load_dff(dff_path)
-            # Auto TXD — same stem in same IMG
-            stem = os.path.splitext(entry.name)[0].lower()
-            for e in img.entries:
-                if e.name.lower() == stem + '.txd':
-                    txd_data = img.read_entry_data(e)
-                    if txd_data:
-                        txd_path = os.path.join(tmp_dir, e.name)
-                        with open(txd_path,'wb') as f: f.write(txd_data)
-                        self.load_txd(txd_path)
-                    break
+            QApplication.processEvents()
+
+            # Step 3: Find + extract TXD
+            stem = os.path.splitext(name)[0].lower()
+            txd_entry = next((e for e in img.entries if e.name.lower() == stem + '.txd'), None)
+            if txd_entry:
+                self._set_status(f"Loading textures for {stem}…")
+                QApplication.processEvents()
+                txd_data = img.read_entry_data(txd_entry)
+                if txd_data:
+                    txd_path = os.path.join(tmp_dir, txd_entry.name)
+                    with open(txd_path,'wb') as f: f.write(txd_data)
+                    self.load_txd(txd_path)
+                    QApplication.processEvents()
+
         except Exception as ex:
-            self._set_status(f"IMG load error: {ex}")
+            self._set_status(f"Load error: {ex}")
+        finally:
+            self._show_progress(False)
+            QApplication.restoreOverrideCursor()
 
     def _populate_geom_list(self): #vers 1
         self._geom_list.clear()
