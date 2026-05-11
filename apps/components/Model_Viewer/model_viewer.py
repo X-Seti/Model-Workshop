@@ -292,6 +292,7 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         self._use_prelight  = False
         self._assembly_mode = False
         self._all_geoms     = []
+        self._show_lod      = False   # hide _vlo by default
         self._light_dir     = (1.0, 2.0, 1.5, 0.0)   # GL_POSITION homogeneous
         self._ambient       = 0.30
         self._diffuse       = 0.85
@@ -574,8 +575,10 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
             name = fname.get(fi, '')
             is_dam = name.endswith('_dam')
             is_ok  = name.endswith('_ok')
+            is_lod = name.endswith('_vlo') or name.endswith('_lo')
             if is_dam and not damaged: continue
             if is_ok  and damaged: continue
+            if is_lod and not getattr(self, '_show_lod', False): continue
             rot, tx, ty, tz = self._calc_world_matrix(frames, fi)
             verts = [(rot[0]*v.x+rot[1]*v.y+rot[2]*v.z+tx,
                       rot[3]*v.x+rot[4]*v.y+rot[5]*v.z+ty,
@@ -622,6 +625,9 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
 
     def set_assembly_mode(self, enabled: bool): #vers 1
         self._assembly_mode = enabled; self.update()
+
+    def set_show_lod(self, enabled: bool): #vers 1
+        self._show_lod = enabled; self.update()
 
     def _draw_assembly(self): #vers 1
         """Draw all geometries at their world positions."""
@@ -1107,10 +1113,12 @@ class ModelViewer(ToolMenuMixin, QWidget):
         # ── Assembly ─────────────────────────────
         lbl_a = QLabel("Assembly"); lbl_a.setFont(self.panel_font)
         lay.addWidget(lbl_a)
-        self._assemble_btn = _btn("All Parts", "Show all parts assembled", self._toggle_assembly_mode, None, True, False)
-        self._damage_btn   = _btn("Damage",    "Show damaged state",       self._toggle_damage_mode,   None, True, False)
+        self._assemble_btn = _btn("All Parts", "Show all parts assembled at world positions", self._toggle_assembly_mode, None, True, False)
+        self._damage_btn   = _btn("Damage",    "Show damaged state (_dam parts)",             self._toggle_damage_mode,   None, True, False)
+        self._lod_btn      = _btn("Show LOD",  "Show LOD meshes (_vlo parts)",                self._toggle_lod_mode,      None, True, False)
         lay.addWidget(self._assemble_btn)
         lay.addWidget(self._damage_btn)
+        lay.addWidget(self._lod_btn)
 
         lay.addSpacing(6)
 
@@ -1305,6 +1313,11 @@ class ModelViewer(ToolMenuMixin, QWidget):
 
     def _toggle_damage_mode(self, enabled: bool): #vers 1
         self._damage_mode = enabled
+        if getattr(self,'_assemble_btn',None) and self._assemble_btn.isChecked():
+            self._toggle_assembly_mode(True)
+
+    def _toggle_lod_mode(self, enabled: bool): #vers 1
+        self.viewport.set_show_lod(enabled)
         if getattr(self,'_assemble_btn',None) and self._assemble_btn.isChecked():
             self._toggle_assembly_mode(True)
 
