@@ -84,13 +84,21 @@ from PyQt6.QtGui import QColor, QFont, QPainter, QBrush, QPen, QIcon, QKeySequen
 
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+    from PyQt6.QtOpenGL import QOpenGLContext
+    from PyQt6.QtGui import QSurfaceFormat
     from OpenGL.GL  import *
     from OpenGL.GLU import *
     OPENGL_AVAILABLE = True
+    # Request compatibility profile globally — required for fixed-function GL
+    # (glMatrixMode, glLightfv, glBegin etc.) on PyQt6 / Python 3.12+
+    _fmt = QSurfaceFormat()
+    _fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    _fmt.setVersion(2, 1)
+    QSurfaceFormat.setDefaultFormat(_fmt)
 except Exception:
     QOpenGLWidget      = QWidget
     OPENGL_AVAILABLE   = False
-    print("[ModelViewer] PyOpenGL not available — install python3-opengl")
+    print("[Vehicle_Workshop] PyOpenGL not available — install python3-opengl")
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 # depends/ = tool-specific only (handling_editor, svg_icons, tool_menu_mixin)

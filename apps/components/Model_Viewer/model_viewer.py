@@ -35,9 +35,15 @@ from PyQt6.QtGui import  QAction, QBrush, QColor, QFont, QIcon, QImage, QKeySequ
 
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+    from PyQt6.QtGui import QSurfaceFormat
     from OpenGL.GL  import *
     from OpenGL.GLU import *
     OPENGL_AVAILABLE = True
+    # Compatibility profile — required for fixed-function GL on Python 3.12+ / PyQt6
+    _fmt = QSurfaceFormat()
+    _fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    _fmt.setVersion(2, 1)
+    QSurfaceFormat.setDefaultFormat(_fmt)
 except Exception:
     QOpenGLWidget      = QWidget
     OPENGL_AVAILABLE   = False
