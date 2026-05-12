@@ -324,15 +324,19 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         self._setup_lighting()
 
-    def _setup_lighting(self): #vers 1
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glEnable(GL_COLOR_MATERIAL)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-        glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
-        glLightfv(GL_LIGHT0, GL_AMBIENT,  [self._ambient]*3 + [1.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE,  [self._diffuse]*3 + [1.0])
-        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.15, 0.15, 0.15, 1.0])
+    def _setup_lighting(self): #vers 2
+        try:
+            glEnable(GL_LIGHTING)
+            glEnable(GL_LIGHT0)
+            glEnable(GL_COLOR_MATERIAL)
+            glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+            glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
+            glLightfv(GL_LIGHT0, GL_AMBIENT,  [self._ambient]*3 + [1.0])
+            glLightfv(GL_LIGHT0, GL_DIFFUSE,  [self._diffuse]*3 + [1.0])
+            glLightfv(GL_LIGHT0, GL_SPECULAR, [0.15, 0.15, 0.15, 1.0])
+            self._gl_lighting = True
+        except Exception:
+            self._gl_lighting = False  # core profile — use vertex colours only
 
     def resizeGL(self, w, h): #vers 1
         if not OPENGL_AVAILABLE: return
@@ -2177,10 +2181,6 @@ class _LayoutMixin:
         return bar
 
 
-    def _set_status(self, msg: str): #Vers 1
-        if hasattr(self, "_status_bar"):
-            self._status_bar.setText(msg)
-
     # - left panel — geometry + texture lists
     def _make_section_header(self, title, search_cb=None): #vers 1
         """Collapsible section header row with optional search box."""
@@ -2609,20 +2609,6 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
 
 
     #    Window chrome
-    def showEvent(self, ev):
-        super().showEvent(ev)
-        if not hasattr(self, "_corner_overlay"):
-            self._corner_overlay = _CornerOverlay(self)
-            self._corner_overlay.update_state(None, self.app_settings)
-        self._corner_overlay.setGeometry(0, 0, self.width(), self.height())
-        self._corner_overlay.raise_()
-        self._corner_overlay.show()
-
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if hasattr(self, "_corner_overlay"):
-            self._corner_overlay.setGeometry(0, 0, self.width(), self.height())
-
     def _get_resize_corner(self, pos): #Vers 1
         s = self.corner_size; x, y = pos.x(), pos.y()
         w, h = self.width(), self.height()
@@ -2723,38 +2709,6 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         return True
 
 
-    def mousePressEvent(self, event): #Vers 1
-        if event.button() != Qt.MouseButton.LeftButton:
-            return super().mousePressEvent(event)
-        pos = event.pos()
-        self.resize_corner = self._get_resize_corner(pos)
-        if self.resize_corner:
-            self.resizing = True
-            self.drag_position = event.globalPosition().toPoint()
-            self.initial_geometry = self.geometry()
-            event.accept(); return
-        if hasattr(self, 'titlebar') and self.titlebar.geometry().contains(pos):
-            tb_pos = self.titlebar.mapFromParent(pos)
-            if self._is_on_draggable_area(tb_pos):
-                handle = self.windowHandle()
-                if handle:
-                    handle.startSystemMove()
-                event.accept(); return
-        super().mousePressEvent(event)
-
-
-    def _handle_corner_resize(self, global_pos): #Vers 1
-        if not self.resize_corner or not self.drag_position: return
-        delta = global_pos - self.drag_position
-        g = self.initial_geometry; dx, dy = delta.x(), delta.y()
-        if "right"  in self.resize_corner: self.resize(max(800,g.width()+dx), self.height())
-        if "bottom" in self.resize_corner: self.resize(self.width(), max(500,g.height()+dy))
-        if "left"   in self.resize_corner:
-            self.setGeometry(g.x()+dx, g.y(), max(800,g.width()-dx), g.height())
-        if "top"    in self.resize_corner:
-            self.setGeometry(g.x(), g.y()+dy, g.width(), max(500,g.height()-dy))
-
-
     def mousePressEvent(self, ev): #Vers 1
         if ev.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(ev); return
@@ -2848,10 +2802,6 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
                 getattr(self, 'hover_corner', None),
                 self.app_settings)
             self._corner_overlay.raise_()
-
-    def resizeEvent(self, event): #vers 2
-        super().resizeEvent(event)
-        self._refresh_corner_overlay()
 
     def showEvent(self, event): #vers 2
         super().showEvent(event)
