@@ -1533,7 +1533,7 @@ class _ToolbarMixin:
 
     def _show_about(self):
         """[ℹ] button — show About / Info for this workshop."""
-        author = getattr(self, "App_author",      __author__)
+        author = getattr(self, "App_author",      "X-Seti")
         year   = getattr(self, "App_year",        __year__)
         desc   = getattr(self, "App_description", "")
         QMessageBox.information(self, f"About {self.App_name}",
@@ -1683,7 +1683,7 @@ class _ToolbarMixin:
         #    Tab 4: About
         at  = QWidget(); al = QVBoxLayout(at)
         atx = QTextEdit(); atx.setReadOnly(True)
-        author = getattr(self, "App_author",      __author__)
+        author = getattr(self, "App_author",      "X-Seti")
         year   = getattr(self, "App_year",        __year__)
         desc   = getattr(self, "App_description", "GUIWorkshop — IMG Factory 1.6")
         atx.setHtml(
@@ -3461,13 +3461,8 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         # No toolbar bar in 3D Preview tab — controls are in right panel
         # Open DFF/TXD are in the left panel; Render/Assembly/Paint in right panel
 
-        # GL Viewport
-        try:
-            self._vw_viewport = DFFViewport()
-            app_settings = getattr(getattr(self,'main_window',None),'app_settings',None)
-            self._vw_viewport.app_settings = app_settings
-        except Exception:
-            self._vw_viewport = QLabel('OpenGL not available')
+        # GL Viewport — use the shared self.viewport created in setup_ui
+        self._vw_viewport = self.viewport
         lay.addWidget(self._vw_viewport, 1)
 
         # Status
