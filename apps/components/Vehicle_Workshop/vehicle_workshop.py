@@ -2572,6 +2572,9 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         self.contmerginc = 1; self.contmergind = 1; self.setspacing = 2
         self.panelmergina = 5; self.panelmerginb = 5
         self.panelmerginc = 5; self.panelmergind = 5
+        self.tabmerginsa  = 2; self.tabmerginsb  = 2
+        self.tabmerginsc  = 2; self.tabmerginsd  = 2
+        self.panelspacing = 4; self.titlebarheight = 36
         self.toolbarheight = 50; self.statusheight = 22
 
         # Window chrome state
