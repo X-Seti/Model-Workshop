@@ -322,21 +322,19 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         glDepthFunc(GL_LEQUAL)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glShadeModel(GL_SMOOTH)
+        glEnable(GL_NORMALIZE)
         self._setup_lighting()
 
-    def _setup_lighting(self): #vers 2
-        try:
-            glEnable(GL_LIGHTING)
-            glEnable(GL_LIGHT0)
-            glEnable(GL_COLOR_MATERIAL)
-            glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-            glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
-            glLightfv(GL_LIGHT0, GL_AMBIENT,  [self._ambient]*3 + [1.0])
-            glLightfv(GL_LIGHT0, GL_DIFFUSE,  [self._diffuse]*3 + [1.0])
-            glLightfv(GL_LIGHT0, GL_SPECULAR, [0.15, 0.15, 0.15, 1.0])
-            self._gl_lighting = True
-        except Exception:
-            self._gl_lighting = False  # core profile — use vertex colours only
+    def _setup_lighting(self): #vers 1
+        glEnable(GL_LIGHTING)
+        glEnable(GL_LIGHT0)
+        glEnable(GL_COLOR_MATERIAL)
+        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+        glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
+        glLightfv(GL_LIGHT0, GL_AMBIENT,  [self._ambient]*3 + [1.0])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE,  [self._diffuse]*3 + [1.0])
+        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.15, 0.15, 0.15, 1.0])
 
     def resizeGL(self, w, h): #vers 1
         if not OPENGL_AVAILABLE: return
@@ -3410,7 +3408,7 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         # Docked mode: no FramelessWindowHint, widget is embedded in tab
         if parent is None and main_window is None:
             self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setup_ui()
+        # setup_ui() already called by GUIWorkshop.__init__ via super().__init__()
 
     def _create_centre_panel(self): #vers 1
         from PyQt6.QtWidgets import QFrame, QVBoxLayout
