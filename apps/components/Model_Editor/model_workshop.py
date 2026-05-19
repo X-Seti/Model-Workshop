@@ -37,7 +37,10 @@ from PyQt6.QtWidgets import (QApplication, QSlider, QCheckBox,
 
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect, QByteArray
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QImage, QPainter, QPen, QBrush, QColor, QCursor
-# QAction location varies by PyQt6 version — try bothQStyledItemDelegate
+
+# Shared DFFViewport — import from methods/, fallback to local methods/
+from apps.methods.dff_viewport import DFFViewport
+
 try:
     from PyQt6.QtGui import QAction
 except ImportError:
@@ -46,6 +49,18 @@ from PyQt6.QtSvg import QSvgRenderer
 
 # Import project modules AFTER path setup
 from apps.methods.imgfactory_svg_icons import SVGIconFactory
+
+# Parser imports — fall back to local depends/ when running standalone
+try:
+    from apps.methods.dff_parser import load_dff, detect_dff, DFFParser
+    from apps.methods.txd_parser import parse_txd as _parse_txd_shared
+except ImportError:
+    from apps.components.Model_Editor.depends.dff_parser import load_dff, detect_dff, DFFParser
+    try:
+        from apps.components.Model_Editor.depends.txd_parser import parse_txd as _parse_txd_shared
+    except ImportError:
+        _parse_txd_shared = None
+
 
 # COL Workshop parser system
 from apps.components.Model_Editor.depends.col_workshop_classes import (
@@ -1185,6 +1200,7 @@ class COL3DViewport(QWidget): #vers 2
                             p.setPen(Qt.PenStyle.NoPen)
                             p.drawPolygon(QPolygonF(pts))
                             continue
+                        # RW V=0 is bottom, QImage V=0 is top — flip V
                         sx0, sy0 = _uvraw[0][0]*tw, _uvraw[0][1]*th
                         sx1, sy1 = _uvraw[1][0]*tw, _uvraw[1][1]*th
                         sx2, sy2 = _uvraw[2][0]*tw, _uvraw[2][1]*th
@@ -7563,12 +7579,14 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         preview_row = QHBoxLayout()
         preview_row.setSpacing(3)
 
-        self.preview_widget = COL3DViewport()
+        self.preview_widget = DFFViewport()
         self.preview_widget._workshop_ref = self
         preview_row.addWidget(self.preview_widget, stretch=1)
-        # GL toggle — injected after QPainter viewport
         self.preview_row = preview_row
-        self.setup_gl_toggle(preview_row)
+        # GLViewportMixin compatibility — preview_widget IS the GL viewport
+        self._gl_viewport  = self.preview_widget
+        self._qp_viewport  = self.preview_widget
+        self._gl_mode      = True
 
         self._create_paint_bar()
 
@@ -10298,10 +10316,13 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                 f"— {len(textures)} textures")
             # Push textures into the 3D viewport cache for textured rendering
             pw = getattr(self, 'preview_widget', None)
-            if pw and hasattr(pw, 'load_textures'):
+            if pw and hasattr(pw, '_upload_textures'):
+                pw._upload_textures(textures)
+                pw.set_render_mode('textured')
+                pw.update()
+            elif pw and hasattr(pw, 'load_textures'):
                 pw.load_textures(textures)
                 if len(textures) > 0:
-                    # Always switch to textured when TXD loads
                     pw.set_render_style('textured')
         except Exception as e:
             import traceback; traceback.print_exc()
@@ -11224,27 +11245,28 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         """Called when user selects a geometry in the mesh list."""
         self._show_dff_geometry(row)
 
-    def _show_dff_geometry(self, index: int): #vers 2
-        """Push a DFF geometry adapter into the 2D or GL viewport."""
-        adapters = getattr(self, '_dff_adapters', [])
-        if not adapters or index < 0 or index >= len(adapters):
-            return
-        adapter = adapters[index]
-        # 2D QPainter viewport
+    def _show_dff_geometry(self, index: int): #vers 3
+        """Push a DFF geometry into the GL viewport using full frame hierarchy."""
+        adapters = getattr(self, '_dff_adapters', [])\
+        
+        model = getattr(self, '_current_dff_model', None)
         pw = getattr(self, 'preview_widget', None)
-        if pw and isinstance(pw, COL3DViewport):
-            pw.set_current_model(adapter, index)
-        # GL viewport — feed raw geometry if available
-        model = getattr(self, '_current_dff_model', None)
-        if model and index < len(model.geometries):
+        if not pw: return
+
+        if model and model.frames and model.atomics:
+            # Full assembly — correct UV mapping and world positions
+            pw.load_all_geometries(
+                model.geometries, [g.materials for g in model.geometries],
+                model.frames, model.atomics)
+        elif model and index < len(model.geometries):
             g = model.geometries[index]
-            self.load_dff_in_gl(g, g.materials)
-        # Also update the detail panel if present
-        model = getattr(self, '_current_dff_model', None)
+            pw.load_geometry(g, g.materials)
+        pw.update()
+
         if model and index < len(model.geometries):
             geom = model.geometries[index]
             self._set_status(
-                f"Geometry [{index}]: {geom.vertex_count} vertices, "
+                f"Geometry [{index}]: {len(geom.vertices)} vertices, "
                 f"{geom.triangle_count} triangles, "
                 f"{geom.material_count} materials"
             )
@@ -11308,7 +11330,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                 has_uvs = bool(geom.uv_layers)
                 if has_uvs:
                     for uv in geom.uv_layers[0]:
-                        lines_obj.append(f"vt {uv.u:.6f} {1.0 - uv.v:.6f}")
+                        lines_obj.append(f"vt {uv.u:.6f} {uv.v:.6f}")
 
                 # Materials
                 for mat_idx, mat in enumerate(geom.materials):
