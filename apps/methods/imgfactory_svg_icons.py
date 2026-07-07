@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in apps/methods/img_svg_icons.py - Version: 9
+#this belongs in apps/methods/imgfactory_svg_icons.py - Version: 14
 # X-Seti - December17 2025 - Img Factory - Standardized SVG Icons
 
 """
@@ -135,8 +135,14 @@ class SVGIconFactory: #vers 8
         return None
 
     @staticmethod
-    def _create_icon(svg_data: str, size: int = 20, color: str = None, bg_color: str = None) -> QIcon: #vers 2
-        """Create QIcon from SVG data with optional coloured background square"""
+    def _create_icon(svg_data: str, size: int = 20, color: str = None,
+                      bg_color: str = None, accent_color: str = None) -> QIcon: #vers 3
+        """Create QIcon from SVG data with optional coloured background square.
+        accent_color, if given, substitutes a second token 'currentAccent' in
+        the SVG, separate from 'currentColor' — used by two-tone icons (e.g.
+        snap target icons: magnet base in the normal icon colour, pictogram
+        overlay in the theme accent colour, mirroring 3ds Max's red-base/
+        white-overlay snap icon convention while staying theme-driven)."""
         if color is None:
             if hasattr(SVGIconFactory, "_cached_color"):
                 color = SVGIconFactory._cached_color
@@ -144,6 +150,13 @@ class SVGIconFactory: #vers 8
                 color = "#000000"
 
         svg_data = svg_data.replace("currentColor", color)
+        if accent_color:
+            svg_data = svg_data.replace("currentAccent", accent_color)
+        else:
+            # No accent given — fall back to the same colour as the base,
+            # so two-tone icons still render sensibly (just monochrome)
+            # rather than leaving a literal unresolved token in the SVG.
+            svg_data = svg_data.replace("currentAccent", color)
 
         # Inject bg rect + rounded corners before icon paths if bg_color given
         if bg_color:
@@ -158,6 +171,7 @@ class SVGIconFactory: #vers 8
         try:
             renderer = QSvgRenderer(svg_data.encode())
             if not renderer.isValid():
+                print(f"[SVGIconFactory] invalid SVG (first 300): {svg_data[:300]}")
                 return QIcon()
 
             pixmap = QPixmap(size, size)
@@ -751,6 +765,43 @@ class SVGIconFactory: #vers 8
                 fill="none" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>'''
         return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def multi_export_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Multi-format export icon — stacked arrows suggesting multiple outputs."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 3v10M8 7l4-4 4 4"
+                stroke="currentColor" stroke-width="2.2"
+                fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 9v8M9 13l3-3 3 3"
+                stroke="currentColor" stroke-width="1.5" opacity="0.55"
+                fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <line x1="4" y1="20" x2="20" y2="20"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="4" y1="22" x2="14" y2="22"
+                stroke="currentColor" stroke-width="1.5" opacity="0.5" stroke-linecap="round"/>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def viewport_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """3D viewport / model viewer icon — screen with crosshair axes."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="3" width="20" height="15" rx="2"
+                stroke="currentColor" stroke-width="1.8" fill="none"/>
+            <line x1="12" y1="3" x2="12" y2="18"
+                stroke="currentColor" stroke-width="1" opacity="0.4"/>
+            <line x1="2" y1="10.5" x2="22" y2="10.5"
+                stroke="currentColor" stroke-width="1" opacity="0.4"/>
+            <line x1="12" y1="10.5" x2="18" y2="6"
+                stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <circle cx="12" cy="10.5" r="1.5" fill="currentColor"/>
+            <line x1="8" y1="21" x2="16" y2="21"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="12" y1="18" x2="12" y2="21"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
     
 
     @staticmethod
@@ -905,22 +956,16 @@ class SVGIconFactory: #vers 8
         return SVGIconFactory._create_icon(svg_data, size, color)
 
     @staticmethod
-    def view_iso_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
-        """Isometric / perspective view icon — 3D cube silhouette"""
+    def view_iso_icon(size: int = 20, color: str = None) -> QIcon: #vers 2
+        """Isometric view icon — compact 'ISO' text label matching XY/XZ/YZ style.
+        Three letters fit by using a smaller font size, all in currentColor."""
         svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <!-- Isometric cube outline -->
-            <!-- Top face -->
-            <polygon points="12,2 22,7 12,12 2,7"
-                stroke="currentColor" stroke-width="1.8" fill="none"
-                stroke-linejoin="round"/>
-            <!-- Left face -->
-            <polygon points="2,7 12,12 12,22 2,17"
-                stroke="currentColor" stroke-width="1.8" fill="none"
-                stroke-linejoin="round"/>
-            <!-- Right face -->
-            <polygon points="12,12 22,7 22,17 12,22"
-                stroke="currentColor" stroke-width="1.8" fill="none"
-                stroke-linejoin="round"/>
+            <text x="1" y="11" font-family="Arial,sans-serif" font-size="10"
+                font-weight="bold" fill="currentColor">ISO</text>
+            <line x1="1" y1="13" x2="23" y2="13"
+                stroke="currentColor" stroke-width="1" opacity="0.4"/>
+            <text x="4" y="21" font-family="Arial,sans-serif" font-size="8"
+                font-weight="bold" fill="currentColor" opacity="0.7">VIEW</text>
         </svg>'''
         return SVGIconFactory._create_icon(svg_data, size, color)
 
@@ -977,21 +1022,50 @@ class SVGIconFactory: #vers 8
     
 
     @staticmethod
-    def backface_icon(size: int = 20, color: str = None) -> QIcon: #vers 7
-        """Backface culling icon"""
-        svg_data = '''<svg viewBox="0 0 24 24">
-            <path d="M12 4 L20 8 L16 16 L8 16 L4 8 Z"
-                fill="currentColor" opacity="0.8"/>
-            <path d="M12 4 L8 16 M12 4 L16 16"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-dasharray="2,2"
-                opacity="0.3"
-                fill="none"/>
-            <path d="M4 8 L12 4 L20 8 L16 16 L8 16 Z"
-                stroke="currentColor"
-                stroke-width="1.5"
-                fill="none"/>
+    def backface_icon(size: int = 20, color: str = None) -> QIcon: #vers 8
+        """Backface culling toggle — two overlapping faces showing front/back.
+        Front face solid, back face dashed behind it."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <!-- Back face — dashed, offset -->
+            <polygon points="6,5 20,5 20,17 6,17"
+                stroke="currentColor" stroke-width="1.5" fill="none"
+                stroke-dasharray="3,2" opacity="0.5"/>
+            <!-- Front face — solid -->
+            <polygon points="4,7 18,7 18,19 4,19"
+                stroke="currentColor" stroke-width="2" fill="currentColor" opacity="0.25"/>
+            <polygon points="4,7 18,7 18,19 4,19"
+                stroke="currentColor" stroke-width="2" fill="none"/>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def toggle_backface_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Toggle backface visibility in render — eye with arrow suggesting
+        flip/reverse, distinct from the culling toggle."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <!-- Triangle face, front -->
+            <polygon points="12,3 22,19 2,19"
+                stroke="currentColor" stroke-width="2" fill="none"/>
+            <!-- Reverse arrow suggesting flip to back -->
+            <path d="M8,19 Q12,23 16,19"
+                stroke="currentColor" stroke-width="1.8"
+                fill="none" stroke-linecap="round"/>
+            <polygon points="16,19 13,21 14,17" fill="currentColor"/>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def reset_view_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Reset view to home position — house/home shape with a small
+        circular reset arrow, distinct from the generic refresh icon."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <!-- House/home shape -->
+            <path d="M3,12 L12,3 L21,12"
+                stroke="currentColor" stroke-width="2" fill="none"
+                stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M5,10 L5,20 L10,20 L10,15 L14,15 L14,20 L19,20 L19,10"
+                stroke="currentColor" stroke-width="2" fill="none"
+                stroke-linecap="round" stroke-linejoin="round"/>
         </svg>'''
         return SVGIconFactory._create_icon(svg_data, size, color)
     
@@ -1189,6 +1263,47 @@ class SVGIconFactory: #vers 8
                      -1.42-1.41 3.12-3.12a1 1 0 0 0 0-1.65z"
                   fill="currentColor"/>
             <circle cx="6.5" cy="17.5" r="1.8" fill="currentColor" opacity="0.5"/>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def render_style_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Cycle render style — sphere half solid half wireframe,
+        the classic 3D app render mode indicator."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <clipPath id="lhalf"><rect x="0" y="0" width="12" height="24"/></clipPath>
+            <clipPath id="rhalf"><rect x="12" y="0" width="12" height="24"/></clipPath>
+            <!-- Left half: solid filled -->
+            <circle cx="12" cy="12" r="9"
+                fill="currentColor" opacity="0.7" clip-path="url(#lhalf)"/>
+            <!-- Right half: wireframe lines -->
+            <circle cx="12" cy="12" r="9"
+                stroke="currentColor" stroke-width="1.5" fill="none"
+                clip-path="url(#rhalf)"/>
+            <ellipse cx="12" cy="12" rx="4.5" ry="9"
+                stroke="currentColor" stroke-width="1" fill="none"
+                clip-path="url(#rhalf)"/>
+            <line x1="12" y1="3" x2="12" y2="21"
+                stroke="currentColor" stroke-width="1.5"/>
+            <!-- Outer ring -->
+            <circle cx="12" cy="12" r="9"
+                stroke="currentColor" stroke-width="1.8" fill="none"/>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def render_settings_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Render settings — three horizontal sliders, standard settings metaphor."""
+        svg_data = '''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <line x1="3" y1="6"  x2="21" y2="6"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="3" y1="12" x2="21" y2="12"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="3" y1="18" x2="21" y2="18"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="8"  cy="6"  r="2.5" fill="currentColor"/>
+            <circle cx="16" cy="12" r="2.5" fill="currentColor"/>
+            <circle cx="10" cy="18" r="2.5" fill="currentColor"/>
         </svg>'''
         return SVGIconFactory._create_icon(svg_data, size, color)
 
@@ -3228,6 +3343,21 @@ class SVGIconFactory: #vers 8
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
         </svg>''', size, color)
 
+    @staticmethod
+    def shading_sphere_icon(size: int = 20, color: str = None) -> 'QIcon': #vers 1
+        """Toggle shading — sphere with highlight suggesting smooth shading on."""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <!-- Sphere body -->
+            <circle cx="12" cy="12" r="9"
+                stroke="currentColor" stroke-width="1.8"
+                fill="currentColor" fill-opacity="0.3"/>
+            <!-- Highlight spot — top-left, suggests a light source -->
+            <circle cx="9" cy="9" r="3"
+                fill="currentColor" fill-opacity="0.6"/>
+            <circle cx="8" cy="8" r="1.5"
+                fill="currentColor" fill-opacity="0.9"/>
+        </svg>''', size, color)
+
 
     @staticmethod
     def dp_lighten_icon(size: int = 42, color: str = None, bg_color: str = None) -> 'QIcon':
@@ -4261,6 +4391,37 @@ def get_paths_map_icon(size: int = 24, color: str = None, bg_color: str = None) 
     </svg>''', size, color, bg_color)
 
 
+def get_timecyc_workshop_icon(size: int = 24, color: str = None, bg_color: str = None) -> QIcon: #vers 1
+    """Timecyc Workshop — sky gradient with sun and horizon line"""
+    return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <!-- Sky gradient backdrop: top arc -->
+        <path d="M2 16 Q12 2 22 16 Z"
+              stroke="currentColor" stroke-width="1.4" fill="none"
+              stroke-linejoin="round" opacity="0.5"/>
+        <!-- Sun circle -->
+        <circle cx="12" cy="10" r="3"
+                stroke="currentColor" stroke-width="1.6" fill="none"/>
+        <!-- Sun rays -->
+        <line x1="12" y1="4"  x2="12" y2="6"  stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="17" y1="5.5" x2="16" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="19" y1="10" x2="17" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="7"  y1="5.5" x2="8"  y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <line x1="5"  y1="10" x2="7"  y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <!-- Horizon line -->
+        <line x1="1" y1="16" x2="23" y2="16"
+              stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        <!-- Time grid cells below horizon -->
+        <rect x="2"  y="17.5" width="4" height="3" rx="0.5"
+              stroke="currentColor" stroke-width="1" fill="none" opacity="0.7"/>
+        <rect x="7"  y="17.5" width="4" height="3" rx="0.5"
+              stroke="currentColor" stroke-width="1" fill="none" opacity="0.7"/>
+        <rect x="12" y="17.5" width="4" height="3" rx="0.5"
+              stroke="currentColor" stroke-width="1" fill="none" opacity="0.7"/>
+        <rect x="17" y="17.5" width="4" height="3" rx="0.5"
+              stroke="currentColor" stroke-width="1" fill="none" opacity="0.7"/>
+    </svg>''', size, color, bg_color)
+
+
 def get_weather_icon(size: int = 24, color: str = None, bg_color: str = None) -> QIcon: #vers 1
     """Weather / timecyc editor — cloud"""
     return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -4534,6 +4695,27 @@ def get_fit_grid_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
     return QIcon(px)
 
 SVGIconFactory.fit_grid_icon = staticmethod(get_fit_grid_icon)
+
+
+def get_quad_view_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+    """Quad view — 4 separate panes (Top/Front/Side/Perspective split),
+    like 3ds Max's viewport-configuration icon. Distinct from fit_grid_icon
+    (which means 'zoom to fit'), this means 'split into 4 viewports'."""
+    from PyQt6.QtGui import QIcon, QPixmap, QPainter
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtSvg import QSvgRenderer
+    c = color or '#ffffff'
+    svg = f'''<svg viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2"  y="2"  width="7" height="7" fill="none" stroke="{c}" stroke-width="1.4"/>
+      <rect x="11" y="2"  width="7" height="7" fill="none" stroke="{c}" stroke-width="1.4"/>
+      <rect x="2"  y="11" width="7" height="7" fill="none" stroke="{c}" stroke-width="1.4"/>
+      <rect x="11" y="11" width="7" height="7" fill="none" stroke="{c}" stroke-width="1.4"/>
+    </svg>'''
+    px = QPixmap(size, size); px.fill(Qt.GlobalColor.transparent)
+    r = QSvgRenderer(svg.encode()); p = QPainter(px); r.render(p); p.end()
+    return QIcon(px)
+
+SVGIconFactory.quad_view_icon = staticmethod(get_quad_view_icon)
 
 
 def get_locate_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
@@ -4970,5 +5152,7 @@ def get_water_workshop_icon(size: int = 24, color: str = None, bg_color: str = N
 
 
 # Attach as static methods on SVGIconFactory
-SVGIconFactory.radar_workshop_icon = staticmethod(get_radar_workshop_icon)
-SVGIconFactory.water_workshop_icon = staticmethod(get_water_workshop_icon)
+SVGIconFactory.radar_workshop_icon    = staticmethod(get_radar_workshop_icon)
+SVGIconFactory.water_workshop_icon    = staticmethod(get_water_workshop_icon)
+SVGIconFactory.timecyc_workshop_icon  = staticmethod(get_timecyc_workshop_icon)
+SVGIconFactory.get_timecyc_workshop_icon = staticmethod(get_timecyc_workshop_icon)
