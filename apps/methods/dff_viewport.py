@@ -1,5 +1,5 @@
 # X-Seti - Jul07 2026 - IMG Factory 1.6 - DFF OpenGL Viewport
-# this belongs in apps/methods/dff_viewport.py - Version: 2
+# this belongs in apps/methods/dff_viewport.py - Version: 12
 """
 DFFViewport - Shared OpenGL viewport for DFF model rendering.
 Used by Model Viewer, Model Workshop, Vehicle Workshop (docked).
@@ -7,6 +7,7 @@ Standalone tools import from their own methods/dff_viewport.py.
 
 ##Methods list -
 # DFFViewport.__init__
+# DFFViewport._apply_selection_click
 # DFFViewport._auto_fit
 # DFFViewport._calc_world_matrix
 # DFFViewport._draw_assembly
@@ -17,9 +18,12 @@ Standalone tools import from their own methods/dff_viewport.py.
 # DFFViewport._draw_wireframe
 # DFFViewport._emit_verts
 # DFFViewport._face_color
+# DFFViewport._get_selection_count
 # DFFViewport._get_ui_color
 # DFFViewport._get_wheel_geom_data
+# DFFViewport._notify_selection_changed
 # DFFViewport._rw_wrap_to_gl
+# DFFViewport._selected_set_for_mode
 # DFFViewport._setup_lighting
 # DFFViewport.clear_textures
 # DFFViewport.initializeGL
@@ -28,6 +32,8 @@ Standalone tools import from their own methods/dff_viewport.py.
 # DFFViewport.load_wheels_dff
 # DFFViewport.mouseMoveEvent
 # DFFViewport.mousePressEvent
+# DFFViewport.toggle_snap_axis_constraint
+# DFFViewport.toggle_snap_target
 # DFFViewport.mouseReleaseEvent
 # DFFViewport.paintGL
 # DFFViewport.reset_camera
@@ -121,6 +127,24 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
 
         # App settings ref (optional — set by host tool)
         self.app_settings = None
+        # Explicit background override (R,G,B 0-255) — None means use theme colour
+        self._bg_color_override = None
+
+        # Sub-object selection state (vertex / edge / face / poly / object)
+        self._selected_verts = set()    # set of vertex indices
+        self._selected_edges = set()    # set of (vi, vj) tuples, vi < vj
+        self._selected_faces = set()    # set of triangle indices
+        self._select_mode    = 'object'  # 'vertex'|'edge'|'face'|'poly'|'object'
+
+        # Snap target toggles — 3ds Max style, independently toggleable
+        # (not single-select like _select_mode). All off by default; this
+        # is state only for now, the actual snap-during-drag math that
+        # reads these flags is a follow-up task, not wired yet.
+        self._snap_targets = {
+            'grid': False, 'pivot': False, 'vertex': False,
+            'endpoint': False, 'midpoint': False, 'edge': False, 'face': False,
+        }
+        self._snap_axis_constraint = False   # "Enable Axis Constraints in Snaps"
 
         # Multi-pane view lock (3ds Max style Top/Front/Side/Perspective panes)
         self._view_locked = False
@@ -155,24 +179,285 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         rgb = defaults.get(key, (40, 40, 50))
         return QColor(*rgb)
 
-    def initializeGL(self): #vers 1
+    def _get_bg_color(self): #vers 1
+        """Resolve actual background colour — explicit override takes priority over theme."""
+        if self._bg_color_override is not None:
+            return QColor(*self._bg_color_override)
+        return self._get_ui_color('bg_panel')
+
+    # - Sub-object picking (vertex / edge / face)
+    # Replicates paintGL's camera transform so a ray can be cast from a
+    # mouse click even though picking happens outside the paint cycle.
+
+    def _pick_ray(self, mx: float, my: float): #vers 1
+        """Return (origin, direction) as two (x,y,z) tuples for a world-space
+        ray through the given widget-space pixel, or None if GL/picking
+        isn't available right now (e.g. widget not yet shown)."""
+        if not OPENGL_AVAILABLE or not self.isValid():
+            return None
+        try:
+            self.makeCurrent()
+            glMatrixMode(GL_PROJECTION); glLoadIdentity()
+            w = max(1, self.width()); h = max(1, self.height())
+            gluPerspective(45.0, w / h, 0.01, 100000.0)
+            glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+            gluLookAt(0, 0, self._dist, 0, 0, 0, 0, 1, 0)
+            glRotatef(-self._pitch, 1, 0, 0)
+            glRotatef(self._yaw, 0, 0, 1)
+            glTranslatef(self._pan_x, self._pan_y, 0)
+
+            model_mat = glGetDoublev(GL_MODELVIEW_MATRIX)
+            proj_mat  = glGetDoublev(GL_PROJECTION_MATRIX)
+            viewport  = glGetIntegerv(GL_VIEWPORT)
+            # Qt widget Y is top-down; GL viewport Y is bottom-up
+            wy = h - my
+
+            near = gluUnProject(mx, wy, 0.0, model_mat, proj_mat, viewport)
+            far  = gluUnProject(mx, wy, 1.0, model_mat, proj_mat, viewport)
+            self.doneCurrent()
+        except Exception:
+            try: self.doneCurrent()
+            except Exception: pass
+            return None
+
+        ox, oy, oz = near
+        dx, dy, dz = far[0]-near[0], far[1]-near[1], far[2]-near[2]
+        ln = math.sqrt(dx*dx + dy*dy + dz*dz) or 1.0
+        return (ox, oy, oz), (dx/ln, dy/ln, dz/ln)
+
+    @staticmethod
+    def _point_seg_dist2(p, a, b): #vers 1
+        """Squared distance from point p to segment a-b (3D)."""
+        abx, aby, abz = b[0]-a[0], b[1]-a[1], b[2]-a[2]
+        apx, apy, apz = p[0]-a[0], p[1]-a[1], p[2]-a[2]
+        ab2 = abx*abx + aby*aby + abz*abz
+        t = 0.0 if ab2 < 1e-12 else max(0.0, min(1.0, (apx*abx+apy*aby+apz*abz)/ab2))
+        cx, cy, cz = a[0]+abx*t, a[1]+aby*t, a[2]+abz*t
+        ddx, ddy, ddz = p[0]-cx, p[1]-cy, p[2]-cz
+        return ddx*ddx + ddy*ddy + ddz*ddz
+
+    def _closest_point_on_ray(self, origin, direction, point): #vers 1
+        """Param t (distance along ray) of the closest approach to `point`,
+        and the squared distance from the ray to that point at that t."""
+        ox, oy, oz = origin; dx, dy, dz = direction
+        px, py, pz = point[0]-ox, point[1]-oy, point[2]-oz
+        t = px*dx + py*dy + pz*dz
+        cx, cy, cz = ox+dx*t, oy+dy*t, oz+dz*t
+        ddx, ddy, ddz = point[0]-cx, point[1]-cy, point[2]-cz
+        return t, ddx*ddx + ddy*ddy + ddz*ddz
+
+    def _pick_vertex(self, mx: float, my: float): #vers 1
+        """Return index of the closest vertex to the ray through (mx,my)
+        within a small screen-space-equivalent tolerance, or None."""
+        ray = self._pick_ray(mx, my)
+        if ray is None or not self._vertices:
+            return None
+        origin, direction = ray
+        # Tolerance scales with camera distance so it stays roughly
+        # constant in screen pixels regardless of zoom.
+        tol2 = (self._dist * 0.02) ** 2
+        best_i, best_t, best_d2 = None, None, tol2
+        for i, v in enumerate(self._vertices):
+            t, d2 = self._closest_point_on_ray(origin, direction, v)
+            if t < 0:
+                continue
+            if d2 < best_d2 or (best_i is not None and d2 <= best_d2 and t < best_t):
+                best_i, best_t, best_d2 = i, t, d2
+        return best_i
+
+    def _pick_edge(self, mx: float, my: float): #vers 1
+        """Return (vi, vj) (vi<vj) of the closest triangle edge to the ray,
+        or None. Edges are derived from triangle sides, deduplicated."""
+        ray = self._pick_ray(mx, my)
+        if ray is None or not self._vertices or not self._triangles:
+            return None
+        origin, direction = ray
+        tol2 = (self._dist * 0.02) ** 2
+        edges = set()
+        for tri in self._triangles:
+            a, b, c = tri[0], tri[1], tri[2]
+            for i, j in ((a, b), (b, c), (c, a)):
+                edges.add((i, j) if i < j else (j, i))
+        best_key, best_t, best_d2 = None, None, tol2
+        verts = self._vertices
+        for (i, j) in edges:
+            try:
+                va, vb = verts[i], verts[j]
+            except IndexError:
+                continue
+            mid = ((va[0]+vb[0])/2, (va[1]+vb[1])/2, (va[2]+vb[2])/2)
+            t, d2 = self._closest_point_on_ray(origin, direction, mid)
+            if t < 0:
+                continue
+            if d2 < best_d2 or (best_key is not None and d2 <= best_d2 and t < best_t):
+                best_key, best_t, best_d2 = (i, j), t, d2
+        return best_key
+
+    def _ray_triangle_intersect(self, origin, direction, v0, v1, v2): #vers 1
+        """Möller–Trumbore ray/triangle test. Returns t (distance along the
+        ray) on hit, or None. Backface-tolerant (tests both winding orders)."""
+        eps = 1e-9
+        e1 = (v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2])
+        e2 = (v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2])
+        dx, dy, dz = direction
+        px = dy*e2[2] - dz*e2[1]
+        py = dz*e2[0] - dx*e2[2]
+        pz = dx*e2[1] - dy*e2[0]
+        det = e1[0]*px + e1[1]*py + e1[2]*pz
+        if -eps < det < eps:
+            return None
+        inv_det = 1.0 / det
+        tx, ty, tz = origin[0]-v0[0], origin[1]-v0[1], origin[2]-v0[2]
+        u = (tx*px + ty*py + tz*pz) * inv_det
+        if u < -1e-6 or u > 1 + 1e-6:
+            return None
+        qx = ty*e1[2] - tz*e1[1]
+        qy = tz*e1[0] - tx*e1[2]
+        qz = tx*e1[1] - ty*e1[0]
+        v = (dx*qx + dy*qy + dz*qz) * inv_det
+        if v < -1e-6 or u + v > 1 + 1e-6:
+            return None
+        t = (e1[0]*qx + e1[1]*qy + e1[2]*qz) * inv_det
+        if t < 1e-6:
+            return None
+        return t
+
+    def _pick_face(self, mx: float, my: float): #vers 1
+        """Return index of the closest triangle hit by the ray through
+        (mx,my), or None. Picks the nearest intersection along the ray
+        (i.e. respects depth — front-most triangle wins)."""
+        ray = self._pick_ray(mx, my)
+        if ray is None or not self._vertices or not self._triangles:
+            return None
+        origin, direction = ray
+        verts = self._vertices
+        best_i, best_t = None, None
+        for i, tri in enumerate(self._triangles):
+            a, b, c = tri[0], tri[1], tri[2]
+            try:
+                v0, v1, v2 = verts[a], verts[b], verts[c]
+            except IndexError:
+                continue
+            t = self._ray_triangle_intersect(origin, direction, v0, v1, v2)
+            if t is not None and (best_t is None or t < best_t):
+                best_i, best_t = i, t
+        return best_i
+
+    def _selected_set_for_mode(self, mode=None): #vers 1
+        """Return the live selection set for the given (or current) mode."""
+        mode = mode or getattr(self, '_select_mode', 'object')
+        if mode == 'vertex':
+            return self._selected_verts
+        if mode == 'edge':
+            return self._selected_edges
+        return self._selected_faces   # 'face' and 'poly' share one set
+
+    def _apply_selection_click(self, mode, key, modifiers): #vers 1
+        """Apply a single click selection. Ctrl+click toggles the item;
+        Shift+click adds without replacing; plain click replaces selection."""
+        sel = self._selected_set_for_mode(mode)
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if key in sel:
+                sel.discard(key)
+            else:
+                sel.add(key)
+        elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+            sel.add(key)
+        else:
+            sel.clear()
+            sel.add(key)
+        self._notify_selection_changed()
+
+    def toggle_snap_target(self, target: str): #vers 1
+        """Flip one snap target on/off (independently toggleable, not
+        single-select - matches 3ds Max's snap ribbon where Vertex+Endpoint+
+        Midpoint etc. can all be active together). No-op for unknown keys
+        rather than raising, since this is called from button clicks."""
+        if target in self._snap_targets:
+            self._snap_targets[target] = not self._snap_targets[target]
+
+    def toggle_snap_axis_constraint(self): #vers 1
+        self._snap_axis_constraint = not self._snap_axis_constraint
+
+    def _get_selection_count(self): #vers 1
+        """Count of currently selected items in the active sub-object mode.
+        Mirrors COL3DViewport's identically-named method - see note in
+        toolbar_layout_manager.py session about consolidating the two
+        viewport classes' duplicated selection logic into methods/."""
+        mode = getattr(self, '_select_mode', 'face')
+        if mode == 'vertex':
+            return len(self._selected_verts)
+        if mode == 'edge':
+            return len(self._selected_edges)
+        return len(self._selected_faces)   # 'face' and 'poly' both live here
+
+    def _notify_selection_changed(self): #vers 2
+        """Tell the parent ModelWorkshop panel the selection set changed,
+        so it can refresh the 'N Vertices/Edges/Faces/Polygons Selected'
+        label. Uses _workshop_ref (set at construction in model_workshop.py)
+        rather than walking the Qt parent chain - more reliable since this
+        widget is set up with a direct back-reference already."""
+        ws = getattr(self, '_workshop_ref', None)
+        if ws is not None and hasattr(ws, '_update_selection_count_label'):
+            ws._update_selection_count_label()
+
+    def initializeGL(self): #vers 2
         if not OPENGL_AVAILABLE: return
-        bg = self._get_ui_color('bg_panel')
+        bg = self._get_bg_color()
         glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         self._setup_lighting()
 
-    def _setup_lighting(self): #vers 1
+    def _setup_lighting(self): #vers 6
         if not OPENGL_AVAILABLE: return
-        glEnable(GL_LIGHTING); glEnable(GL_LIGHT0)
-        glLightfv(GL_LIGHT0, GL_POSITION,  list(self._light_dir))
-        glLightfv(GL_LIGHT0, GL_AMBIENT,   [self._ambient]*3 + [1.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE,   [self._diffuse]*3 + [1.0])
-        glLightfv(GL_LIGHT0, GL_SPECULAR,  [0.3, 0.3, 0.3, 1.0])
-        glEnable(GL_COLOR_MATERIAL)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+        import ctypes
+
+        _GL_LIGHTING             = 0x0B50
+        _GL_LIGHT0               = 0x4000
+        _GL_POSITION             = 0x1203
+        _GL_AMBIENT              = 0x1200
+        _GL_DIFFUSE              = 0x1201
+        _GL_SPECULAR             = 0x1202
+        _GL_COLOR_MATERIAL       = 0x0B57
+        _GL_FRONT_AND_BACK       = 0x0408
+        _GL_AMBIENT_AND_DIFFUSE  = 0x1602
+
+        _libGL = None
+        for _name in ('libGL.so.1', 'libGL.so', '/usr/lib/libGL.so.1',
+                      '/usr/lib/libGL.so', '/usr/lib64/libGL.so.1',
+                      'libOpenGL.so.0', '/usr/lib/x86_64-linux-gnu/libGL.so.1'):
+            try:
+                _libGL = ctypes.CDLL(_name)
+                break
+            except OSError:
+                _libGL = None
+
+        if _libGL is None:
+            import glob
+            for _p in glob.glob('/usr/lib*/**/libGL.so*', recursive=True):
+                try:
+                    _libGL = ctypes.CDLL(_p)
+                    break
+                except OSError:
+                    _libGL = None
+
+        if _libGL is None:
+            print("[DFFViewport] libGL not found — lighting disabled")
+            return
+
+        _f4 = ctypes.c_float * 4
+        _libGL.glEnable(_GL_LIGHTING)
+        _libGL.glEnable(_GL_LIGHT0)
+        ld = self._light_dir
+        a, d = self._ambient, self._diffuse
+        _libGL.glLightfv(_GL_LIGHT0, _GL_POSITION, _f4(ld[0], ld[1], ld[2], ld[3]))
+        _libGL.glLightfv(_GL_LIGHT0, _GL_AMBIENT,  _f4(a, a, a, 1.0))
+        _libGL.glLightfv(_GL_LIGHT0, _GL_DIFFUSE,  _f4(d, d, d, 1.0))
+        _libGL.glLightfv(_GL_LIGHT0, _GL_SPECULAR, _f4(0.3, 0.3, 0.3, 1.0))
+        _libGL.glEnable(_GL_COLOR_MATERIAL)
+        _libGL.glColorMaterial(_GL_FRONT_AND_BACK, _GL_AMBIENT_AND_DIFFUSE)
 
     def resizeGL(self, w, h): #vers 2
         if not OPENGL_AVAILABLE: return
@@ -187,9 +472,9 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         glMatrixMode(GL_MODELVIEW)
         self._label_widget.move(4, 2)
 
-    def paintGL(self): #vers 3
+    def paintGL(self): #vers 4
         if not OPENGL_AVAILABLE: return
-        bg = self._get_ui_color('bg_panel')
+        bg = self._get_bg_color()
         glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
@@ -214,6 +499,7 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
             if   self._mode == 'wireframe': self._draw_wireframe()
             elif self._mode == 'solid':     self._draw_solid()
             elif self._mode == 'textured':  self._draw_textured()
+            self._draw_selection_overlay()
         if self._show_grid: self._draw_grid()
         self._draw_axes()
 
@@ -287,6 +573,62 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
             self._emit_verts(v1,v2,v3)
         glEnd()
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+        glEnable(GL_LIGHTING)
+
+    def _draw_selection_overlay(self): #vers 1
+        """Highlight the active sub-object selection (vertex/edge/face/poly)
+        on top of the already-rendered mesh. No-op in 'object' mode."""
+        if not OPENGL_AVAILABLE: return
+        mode = getattr(self, '_select_mode', 'object')
+        if mode == 'object':
+            return
+        verts = self._vertices
+        if not verts:
+            return
+        glDisable(GL_LIGHTING)
+        glDisable(GL_DEPTH_TEST)
+
+        if mode == 'vertex' and self._selected_verts:
+            glColor3f(1.0, 0.8, 0.1)
+            glPointSize(max(4.0, min(10.0, self._dist * 0.03)))
+            glBegin(GL_POINTS)
+            for vi in self._selected_verts:
+                if 0 <= vi < len(verts):
+                    v = verts[vi]; glVertex3f(v[0], v[1], v[2])
+            glEnd()
+
+        elif mode == 'edge' and self._selected_edges:
+            glColor3f(1.0, 0.8, 0.1)
+            glLineWidth(3.0)
+            glBegin(GL_LINES)
+            for (vi, vj) in self._selected_edges:
+                if 0 <= vi < len(verts) and 0 <= vj < len(verts):
+                    a, b = verts[vi], verts[vj]
+                    glVertex3f(*a); glVertex3f(*b)
+            glEnd()
+
+        elif mode in ('face', 'poly') and self._selected_faces:
+            glColor4f(1.0, 0.8, 0.1, 0.45)
+            glEnable(GL_BLEND); glDepthMask(False)
+            glBegin(GL_TRIANGLES)
+            for fi in self._selected_faces:
+                if 0 <= fi < len(self._triangles):
+                    v1, v2, v3, _ = self._triangles[fi]
+                    self._emit_verts(v1, v2, v3)
+            glEnd()
+            glDepthMask(True)
+            # Outline on top so the selection reads clearly in solid mode
+            glColor3f(1.0, 0.9, 0.2); glLineWidth(2.0)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
+            glBegin(GL_TRIANGLES)
+            for fi in self._selected_faces:
+                if 0 <= fi < len(self._triangles):
+                    v1, v2, v3, _ = self._triangles[fi]
+                    self._emit_verts(v1, v2, v3)
+            glEnd()
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
+
+        glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
 
     def _draw_solid(self): #vers 3
@@ -735,8 +1077,28 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         self.resizeGL(self.width(), self.height())
         self.update()
 
-    def mousePressEvent(self, event): #vers 1
+    def mousePressEvent(self, event): #vers 2
         self._last_pos = event.pos()
+        if event.button() == Qt.MouseButton.LeftButton:
+            mode = getattr(self, '_select_mode', 'object')
+            if mode == 'object':
+                return
+            mx, my = event.pos().x(), event.pos().y()
+            if mode == 'vertex':
+                key = self._pick_vertex(mx, my)
+            elif mode == 'edge':
+                key = self._pick_edge(mx, my)
+            else:  # 'face' or 'poly'
+                key = self._pick_face(mx, my)
+            if key is not None:
+                self._apply_selection_click(mode, key, event.modifiers())
+                self.update()
+            elif not (event.modifiers() & (Qt.KeyboardModifier.ControlModifier |
+                                           Qt.KeyboardModifier.ShiftModifier)):
+                # Clicked empty space with no modifier — clear selection
+                self._selected_set_for_mode(mode).clear()
+                self._notify_selection_changed()
+                self.update()
 
     def mouseMoveEvent(self, event): #vers 2
         dx = event.pos().x() - self._last_pos.x()
@@ -809,12 +1171,22 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         g = model.geometries[min(index, len(model.geometries)-1)]
         self.load_geometry(g, g.materials)
 
-    def set_checkerboard_background(self): #vers 1
-        # No-op — OpenGL bg is solid theme colour
-        pass
+    def set_checkerboard_background(self): #vers 2
+        """No checkerboard rendering in GL mode — clear any colour override back to theme."""
+        self._bg_color_override = None
+        self.update()
 
-    def set_background_color(self, color): #vers 1
-        pass
+    def set_background_color(self, color): #vers 2
+        """Set an explicit background colour, overriding the theme colour.
+
+        color: (r, g, b) tuple 0-255, or a QColor.
+        """
+        if hasattr(color, 'getRgb'):
+            r, g, b, _ = color.getRgb()
+            self._bg_color_override = (r, g, b)
+        else:
+            self._bg_color_override = tuple(color[:3])
+        self.update()
 
     def _refresh(self): #vers 1
         self.update()

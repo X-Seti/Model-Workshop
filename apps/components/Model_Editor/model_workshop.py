@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-#this belongs in apps/components/Model_Editor/model_workshop.py - Version: 119
+#this belongs in apps/components/Model_Editor/model_workshop.py - Version: 145
 # X-Seti - Apr 2026 - Model Workshop (based on COL Workshop)
 # [FIX] _make_slot_pix crash: imported QPolygonF into local scope.
 # [FIX] Material Editor cube preview crash: added missing QPolygonF import to _open_dff_material_list scope.
 # [FIX] _rebuild_grid QWidget crash: removed redundant deleteLater (QScrollArea auto-deletes old widget).
 # [FIX] _rebuild_grid QFrame deletion crash: reparent slots before scroll widget swap.
 # X-Seti - May08 2026 - Model editor
-# X-Seti - Jul07 2026 - Added 3ds Max style 4-pane viewport (Top/Front/Side/Perspective), user-assignable per pane via right-click, splitter-resizable, layout persists to model_workshop.json.
+# X-Seti - Jul07 2026 - Added 3ds Max style 4-pane viewport (Top/Front/Side/Perspective) via QStackedWidget central widget; user-assignable per pane by right-click; splitter-resizable; layout persists to model_workshop.json.
 
 import os
 # Force X11/GLX backend for NVIDIA on Wayland
@@ -97,9 +97,11 @@ except ImportError:
 
 ##Methods list - (key methods only; see MODEL_METHODS.md for full index)
 # _apply_prelighting        TODO: bake ambient+directional into DFF vertex colours
+# _apply_selection_click      shared click/ctrl-toggle/shift-add for vertex/edge/face select #vers 1
 # _auto_load_from_texlist     scan texlist/ folder for pre-exported textures
 # _auto_load_txd_from_imgs    search open IMG tabs for IDE-linked TXD
 # _browse_texlist_folder      open texlist/ browser dialog
+# _build_face_adjacency       face_index -> shared-edge neighbours map, built fresh each call #vers 1
 # _build_primitive            generate vertices+triangles for Box/Sphere/Cylinder/Plane
 # _compute_face_shade         Lambertian per-face shade factor (ambient + diffuse) #vers 2
 # _create_col_from_dff        generate COL1/2/3 binary from DFF geometry #vers 1
@@ -107,6 +109,9 @@ except ImportError:
 # _display_dff_model          populate model list + 3D viewport from parsed DFF #vers 3
 # _enable_dff_toolbar         show/hide DFF-only toolbar buttons #vers 2
 # _export_dff_obj             export DFF to Wavefront OBJ + MTL #vers 1
+# _extrude_dialog              prompt for distance, apply extrude to selected faces #vers 1
+# _extrude_selected_faces      duplicate+offset selected face verts, build side walls #vers 1
+# _face_material_id           normalise face.material to plain int id #vers 1
 # _find_in_ide                look up model in DAT Browser IDE entries
 # _hide_tex_hover             close texture hover popup #vers 1
 # _load_txd_file              load TXD file → texture panel + viewport cache
@@ -120,12 +125,19 @@ except ImportError:
 # _open_model_workshop        open from main window / IMG entry
 # _open_paint_editor          open paint mode for face surface editing #vers 5
 # _open_txd_combined          smart DFF+TXD load (DB→IMG→browse)
+# _pick_edge                  closest edge to click point, screen-projected #vers 1
+# _pick_face                  closest face centroid to click point, screen-projected #vers 1
+# _pick_poly_group            flood-fill connected faces sharing material (Element select) #vers 1
+# _pick_vertex                closest vertex to click point, screen-projected #vers 1
 # _populate_tex_thumbnails    64×64 thumbnail grid in texture panel #vers 1
 # _populate_texture_list      fill texture panel table from _mod_textures
 # _prelight_setup_dialog      light source setup for prelighting STUB #vers 1
 # _rebuild_grid               rebuild material editor slot grid on column change
 # _refresh_icons              refresh all SVG icons after theme change
 # _save_textures_as_txd       save current textures as new TXD file
+# _selected_set_for_mode      live selection set for given sub-object mode #vers 1
+# _selected_vertex_indices    resolve active selection (any mode) to vertex indices #vers 1
+# _set_select_mode             switch vertex/edge/face/poly/object select mode #vers 2
 # _set_texlist_folder         set texlist/ folder via dialog
 # _show_dff_geometry          push _DFFGeometryAdapter into COL3DViewport #vers 1
 # _show_tex_hover             hover texture preview popup #vers 1
@@ -274,6 +286,9 @@ class COL3DViewport(QWidget): #vers 2
         self._gizmo_start  = None
         # face selection / paint state
         self._selected_faces  = set()    # set of face indices currently selected
+        self._selected_verts  = set()    # set of vertex indices currently selected
+        self._selected_edges  = set()    # set of (vi, vj) tuples, vi < vj, currently selected
+        self._select_mode     = 'face'   # 'vertex' | 'edge' | 'face' | 'poly' | 'object'
         self._paint_mode      = False    # True = click face to paint material
         self._paint_material  = 0
         self._tool_mode       = 'select'  # 'select' | 'paint' | 'dropper' | 'select_all_mat'
@@ -579,6 +594,365 @@ class COL3DViewport(QWidget): #vers 2
             return best_i, faces[best_i]
         return None, None
 
+    def _face_material_id(self, face): #vers 1
+        """Normalise a face's material to a plain int id, matching the
+        hasattr(material_id)-or-int idiom used throughout this file."""
+        mat = getattr(face, 'material', None)
+        if mat is None:
+            return None
+        return mat.material_id if hasattr(mat, 'material_id') else int(mat)
+
+    def _build_face_adjacency(self, faces): #vers 1
+        """Build a face_index -> set(neighbour_face_index) map, where two
+        faces are neighbours if they share an edge (two vertex indices, in
+        either order). Built fresh each call — meshes are edited often
+        enough that a cached version would risk going stale silently."""
+        edge_to_faces = {}
+        for fi, face in enumerate(faces):
+            fa = getattr(face, 'a', None)
+            if fa is None:
+                continue
+            a, b, c = face.a, face.b, face.c
+            for i, j in ((a, b), (b, c), (c, a)):
+                key = (i, j) if i < j else (j, i)
+                edge_to_faces.setdefault(key, []).append(fi)
+
+        adjacency = {fi: set() for fi in range(len(faces))}
+        for key, owners in edge_to_faces.items():
+            if len(owners) < 2:
+                continue
+            for fi in owners:
+                for fj in owners:
+                    if fi != fj:
+                        adjacency[fi].add(fj)
+        return adjacency
+
+    def _pick_poly_group(self, mx, my): #vers 1
+        """Return (set(face_indices), seed_face) for the connected group of
+        faces reachable from the clicked face via shared edges, stopping at
+        material boundaries — equivalent to 3ds Max Element/Polygon select
+        on a model split into material-bound shells. Returns (None, None)
+        if nothing was clicked."""
+        seed_i, seed_face = self._pick_face(mx, my)
+        if seed_i is None:
+            return None, None
+
+        model = self._model
+        faces = getattr(model, 'faces', [])
+        seed_mat = self._face_material_id(seed_face)
+        adjacency = self._build_face_adjacency(faces)
+
+        group = {seed_i}
+        frontier = [seed_i]
+        while frontier:
+            fi = frontier.pop()
+            for fj in adjacency.get(fi, ()):
+                if fj in group:
+                    continue
+                if self._face_material_id(faces[fj]) != seed_mat:
+                    continue
+                group.add(fj)
+                frontier.append(fj)
+
+        return group, seed_face
+
+
+        """Return (vertex_index, vertex) of the closest vertex within 10px of
+        click, or (None, None). Tighter radius than face pick since vertex
+        points are small targets."""
+        import math
+        model = self._model
+        if not model: return None, None
+        verts = getattr(model, 'vertices', [])
+        if not verts: return None, None
+
+        scale, ox, oy = self._get_scale_origin()
+
+        def ts(x, y, z): #vers 1
+            px, py = self._proj(x, y, z)
+            return px * scale + ox, py * scale + oy
+
+        def g3(obj): #vers 1
+            if hasattr(obj, 'x'): return obj.x, obj.y, obj.z
+            return float(obj[0]), float(obj[1]), float(obj[2])
+
+        best_i, best_d = None, 10.0   # 10px pick radius — tighter than face
+        for i, v in enumerate(verts):
+            try:
+                vx, vy, vz = g3(v)
+            except (IndexError, TypeError):
+                continue
+            sx, sy = ts(vx, vy, vz)
+            d = math.hypot(mx - sx, my - sy)
+            if d < best_d:
+                best_d, best_i = d, i
+
+        if best_i is not None:
+            return best_i, verts[best_i]
+        return None, None
+
+    def _pick_edge(self, mx, my): #vers 1
+        """Return (edge_key, (vi, vj)) of the closest edge whose projected
+        midpoint is within 12px of click, or (None, None). edge_key is a
+        normalised (vi, vj) tuple with vi < vj. Edges are derived from face
+        triangle sides, deduplicated."""
+        import math
+        model = self._model
+        if not model: return None, None
+        verts = getattr(model, 'vertices', [])
+        faces = getattr(model, 'faces',   [])
+        if not verts or not faces: return None, None
+
+        scale, ox, oy = self._get_scale_origin()
+
+        def ts(x, y, z): #vers 1
+            px, py = self._proj(x, y, z)
+            return px * scale + ox, py * scale + oy
+
+        def g3(obj): #vers 1
+            if hasattr(obj, 'x'): return obj.x, obj.y, obj.z
+            return float(obj[0]), float(obj[1]), float(obj[2])
+
+        # Collect unique edges from triangle sides
+        edges = set()
+        for face in faces:
+            fa = getattr(face, 'a', None)
+            if fa is None: continue
+            a, b, c = face.a, face.b, face.c
+            for i, j in ((a,b), (b,c), (c,a)):
+                edges.add((i, j) if i < j else (j, i))
+
+        best_key, best_d = None, 12.0   # 12px pick radius
+        for (i, j) in edges:
+            try:
+                ax, ay, az = g3(verts[i])
+                bx, by, bz = g3(verts[j])
+            except IndexError:
+                continue
+            sx, sy = ts((ax+bx)/2, (ay+by)/2, (az+bz)/2)
+            d = math.hypot(mx - sx, my - sy)
+            if d < best_d:
+                best_d, best_key = d, (i, j)
+
+        if best_key is not None:
+            return best_key, best_key
+        return None, None
+
+    def _selected_set_for_mode(self, mode): #vers 1
+        """Return the live selection set for the given sub-object mode."""
+        if mode == 'vertex':
+            return self._selected_verts
+        if mode == 'edge':
+            return self._selected_edges
+        return self._selected_faces   # 'face' and 'poly' share one set for now
+
+    def _apply_selection_click(self, mode, key, modifiers): #vers 1
+        """Apply a single click selection for the given mode ('vertex'|'edge'|
+        'face'). Ctrl+click toggles the item in/out of the existing selection;
+        a plain click replaces the selection with just this item. Shift+click
+        adds without replacing (used by drag-select too)."""
+        sel = self._selected_set_for_mode(mode)
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if key in sel:
+                sel.discard(key)
+            else:
+                sel.add(key)
+        elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+            sel.add(key)
+        else:
+            sel.clear()
+            sel.add(key)
+
+    def _selected_vertex_indices(self): #vers 1
+        """Resolve the active sub-object selection, whatever mode it's in,
+        down to a concrete set of vertex indices. Vertex mode returns its
+        set directly; edge mode expands each (vi, vj) pair; face/poly mode
+        expands each face's three corner vertices. Returns an empty set if
+        nothing is selected — callers should treat that as 'no scoped
+        selection, fall back to whole-model' rather than 'select nothing'."""
+        mode = getattr(self, '_select_mode', 'face')
+        model = self._model
+        faces = getattr(model, 'faces', []) if model else []
+
+        if mode == 'vertex':
+            return set(self._selected_verts)
+
+        if mode == 'edge':
+            verts = set()
+            for (vi, vj) in self._selected_edges:
+                verts.add(vi)
+                verts.add(vj)
+            return verts
+
+        # 'face' / 'poly'
+        verts = set()
+        for fi in self._selected_faces:
+            if 0 <= fi < len(faces):
+                face = faces[fi]
+                fa = getattr(face, 'a', None)
+                if fa is not None:
+                    verts.add(face.a)
+                    verts.add(face.b)
+                    verts.add(face.c)
+        return verts
+
+    def _extrude_selected_faces(self, distance: float): #vers 1
+        """Extrude the currently selected faces along their averaged normal
+        by `distance` (positive = outward, negative = inward/push-in).
+
+        Mutates the real DFF Geometry behind this adapter directly (not just
+        the viewport's display copies), so the result persists on save:
+          1. Every vertex used by a selected face is duplicated (position,
+             normal, colour, all UV layers carried over) - shared vertices
+             between two selected faces are duplicated only once, so the
+             extruded cap stays welded together.
+          2. The selected faces' triangles are repointed to the new
+             duplicate vertices - this becomes the cap (the moved face).
+          3. Side-wall triangles are built along the boundary edges of the
+             selected island (edges used by exactly one selected face) to
+             connect the original ring to the new cap ring.
+          4. The duplicate vertices are immediately offset by `distance`
+             along the averaged face normal.
+          5. Selection is updated to the new cap faces, so a following
+             gizmo drag (translate/rotate) continues to act on the
+             extruded result rather than the original base.
+
+        Returns True on success, False if there is nothing to extrude
+        (no model, no selected faces, or not in face/poly select mode)."""
+        import math
+
+        model = self._model
+        if model is None:
+            return False
+        geom = getattr(model, '_geometry', None)
+        if geom is None:
+            return False   # not a real DFF adapter (e.g. COL box/sphere editing)
+
+        sel_faces = sorted(self._selected_faces)
+        if not sel_faces:
+            return False
+
+        faces = getattr(model, 'faces', [])
+        verts = getattr(model, 'vertices', [])
+
+        # - 1. Build duplicate-vertex map for every vert used by a selected face
+        used_verts = set()
+        for fi in sel_faces:
+            if 0 <= fi < len(faces):
+                f = faces[fi]
+                used_verts.add(f.a); used_verts.add(f.b); used_verts.add(f.c)
+
+        if not used_verts:
+            return False
+
+        # Ensure parallel arrays exist and are long enough before indexing
+        n_verts = len(geom.vertices)
+        from apps.components.Model_Editor.depends.dff_classes import Vector3, TexCoord
+        if len(geom.normals) < n_verts:
+            geom.normals.extend([Vector3() for _ in range(n_verts - len(geom.normals))])
+        for layer in geom.uv_layers:
+            if len(layer) < n_verts:
+                layer.extend([TexCoord() for _ in range(n_verts - len(layer))])
+
+        import copy
+        dup_of = {}   # original vert index -> new vert index
+        for vi in used_verts:
+            new_vec = copy.deepcopy(geom.vertices[vi])
+            geom.vertices.append(new_vec)
+            new_idx = len(geom.vertices) - 1
+
+            if vi < len(geom.normals):
+                geom.normals.append(copy.deepcopy(geom.normals[vi]))
+            else:
+                geom.normals.append(Vector3())
+
+            if vi < len(geom.colors):
+                geom.colors.append(copy.deepcopy(geom.colors[vi]))
+
+            for layer in geom.uv_layers:
+                if vi < len(layer):
+                    layer.append(copy.deepcopy(layer[vi]))
+
+            dup_of[vi] = new_idx
+
+        # - 2. Compute averaged face normal (for extrude direction) using
+        #      ORIGINAL (pre-duplicate) positions
+        def g3(v):
+            return (v.x, v.y, v.z) if hasattr(v, 'x') else (float(v[0]), float(v[1]), float(v[2]))
+
+        nx, ny, nz = 0.0, 0.0, 0.0
+        for fi in sel_faces:
+            f = faces[fi]
+            ax, ay, az = g3(verts[f.a])
+            bx, by, bz = g3(verts[f.b])
+            cx, cy, cz = g3(verts[f.c])
+            ux, uy, uz = bx-ax, by-ay, bz-az
+            vx, vy, vz = cx-ax, cy-ay, cz-az
+            fnx = uy*vz - uz*vy
+            fny = uz*vx - ux*vz
+            fnz = ux*vy - uy*vx
+            nx += fnx; ny += fny; nz += fnz
+        n_len = math.sqrt(nx*nx + ny*ny + nz*nz) or 1.0
+        nx, ny, nz = nx/n_len, ny/n_len, nz/n_len
+
+        # - 3. Boundary edges of the selected island (used by exactly one
+        #      selected face) need a side wall; interior shared edges don't
+        edge_count = {}
+        for fi in sel_faces:
+            f = faces[fi]
+            a, b, c = f.a, f.b, f.c
+            for i, j in ((a,b), (b,c), (c,a)):
+                key = (i, j) if i < j else (j, i)
+                edge_count[key] = edge_count.get(key, 0) + 1
+        boundary_edges = [e for e, n in edge_count.items() if n == 1]
+
+        # - 4. Repoint selected triangles to the duplicate vertices (cap)
+        new_face_indices = []
+        for fi in sel_faces:
+            f = faces[fi]
+            geom.triangles[fi].v1 = dup_of[f.a]
+            geom.triangles[fi].v2 = dup_of[f.b]
+            geom.triangles[fi].v3 = dup_of[f.c]
+            new_face_indices.append(fi)
+
+        # - 5. Build side-wall triangles along boundary edges, original
+        #      material carried over from whichever selected face owned it
+        from apps.components.Model_Editor.depends.dff_classes import Triangle
+        cap_material = geom.triangles[sel_faces[0]].material_id if geom.triangles else 0
+        for (i, j) in boundary_edges:
+            di, dj = dup_of[i], dup_of[j]
+            geom.triangles.append(Triangle(v1=i,  v2=j,  v3=dj, material_id=cap_material))
+            geom.triangles.append(Triangle(v1=i,  v2=dj, v3=di, material_id=cap_material))
+            new_face_indices.append(len(geom.triangles) - 2)
+            new_face_indices.append(len(geom.triangles) - 1)
+
+        # - 6. Offset the duplicate (cap) vertices along the averaged normal
+        for new_idx in dup_of.values():
+            v = geom.vertices[new_idx]
+            v.x += nx * distance
+            v.y += ny * distance
+            v.z += nz * distance
+
+        # Refresh the workshop's adapters/viewport from the mutated geometry,
+        # then re-resolve selection against the freshly rebuilt face list
+        # (adapter is rebuilt, so old `faces` list/objects are now stale)
+        ws = self._find_workshop()
+        if ws:
+            dff_model = getattr(ws, '_current_dff_model', None)
+            if dff_model is not None:
+                ws._display_dff_model(dff_model)
+                vp = getattr(ws, 'preview_widget', None)
+                if vp is self:
+                    # _display_dff_model rebuilds adapters; re-point to the
+                    # one matching this geometry and restore selection
+                    for adapter in getattr(ws, '_dff_adapters', []):
+                        if adapter._geometry is geom:
+                            self._model = adapter
+                            break
+                    self._selected_faces = set(new_face_indices)
+        self.update()
+        return True
+
 
     # - mouse
     def mousePressEvent(self, event): #vers 1
@@ -690,24 +1064,58 @@ class COL3DViewport(QWidget): #vers 2
                     self.update()
                 return
 
-            # Normal mode — face select on click; start drag-select
-            fi, face = self._pick_face(mx, my)
-            if fi is not None:
-                mods = event.modifiers()
-                if mods & Qt.KeyboardModifier.ControlModifier:
-                    # Ctrl+click: toggle individual face
-                    if fi in self._selected_faces:
-                        self._selected_faces.discard(fi)
+            # Normal mode — select by current sub-object mode; start drag-select
+            mode = getattr(self, '_select_mode', 'face')
+
+            if mode == 'vertex':
+                vi, _ = self._pick_vertex(mx, my)
+                if vi is not None:
+                    self._apply_selection_click('vertex', vi, event.modifiers())
+                    self._drag_selecting = True
+                    self.setCursor(Qt.CursorShape.CrossCursor)
+                    self.update()
+                    return
+
+            elif mode == 'edge':
+                ek, _ = self._pick_edge(mx, my)
+                if ek is not None:
+                    self._apply_selection_click('edge', ek, event.modifiers())
+                    self._drag_selecting = True
+                    self.setCursor(Qt.CursorShape.CrossCursor)
+                    self.update()
+                    return
+
+            elif mode == 'poly':
+                group, seed_face = self._pick_poly_group(mx, my)
+                if group is not None:
+                    mods = event.modifiers()
+                    if mods & Qt.KeyboardModifier.ControlModifier:
+                        # Ctrl+click: toggle the whole group in/out together
+                        if group & self._selected_faces:
+                            self._selected_faces -= group
+                        else:
+                            self._selected_faces |= group
+                    elif mods & Qt.KeyboardModifier.ShiftModifier:
+                        self._selected_faces |= group
                     else:
-                        self._selected_faces.add(fi)
-                else:
-                    self._selected_faces = {fi}
-                self._drag_selecting = True   # enable brush drag
-                self.setCursor(Qt.CursorShape.CrossCursor)
-                if self.on_face_selected:
-                    self.on_face_selected(fi, face)
-                self.update()
-                return
+                        self._selected_faces = set(group)
+                    # No drag-select for poly — one click selects the whole
+                    # shell; dragging would just re-trigger the same group.
+                    if self.on_face_selected:
+                        self.on_face_selected(next(iter(group)), seed_face)
+                    self.update()
+                    return
+
+            else:  # 'face' or default
+                fi, face = self._pick_face(mx, my)
+                if fi is not None:
+                    self._apply_selection_click('face', fi, event.modifiers())
+                    self._drag_selecting = True
+                    self.setCursor(Qt.CursorShape.CrossCursor)
+                    if self.on_face_selected:
+                        self.on_face_selected(fi, face)
+                    self.update()
+                    return
 
             # Gizmo axis
             axis = self._hit_gizmo(mx, my)
@@ -766,8 +1174,16 @@ class COL3DViewport(QWidget): #vers 2
                 dot = (d.x()*px + d.y()*py) / screen_len
                 delta = dot / scale
                 if self._model:
-                    # Move vertices
-                    for v in getattr(self._model, 'vertices', []):
+                    sel_verts = self._selected_vertex_indices()
+                    # Move vertices — scoped to selection if one exists,
+                    # otherwise whole-model (preserves prior COL-editing
+                    # behaviour when nothing is sub-object selected)
+                    all_verts = getattr(self._model, 'vertices', [])
+                    if sel_verts:
+                        targets = (all_verts[i] for i in sel_verts if i < len(all_verts))
+                    else:
+                        targets = all_verts
+                    for v in targets:
                         if   axis=='X': v.x += delta
                         elif axis=='Y': v.y += delta
                         else:           v.z += delta
@@ -812,8 +1228,14 @@ class COL3DViewport(QWidget): #vers 2
                         else:
                             pt.x = x2*cos_r - y2*sin_r
                             pt.y = x2*sin_r + y2*cos_r
-                    # Rotate vertices
-                    for v in getattr(self._model, 'vertices', []):
+                    sel_verts = self._selected_vertex_indices()
+                    all_verts = getattr(self._model, 'vertices', [])
+                    if sel_verts:
+                        targets = (all_verts[i] for i in sel_verts if i < len(all_verts))
+                    else:
+                        targets = all_verts
+                    # Rotate vertices — scoped to selection if one exists
+                    for v in targets:
                         _rot_pt(v)
                     # Rotate box min/max
                     for box in getattr(self._model, 'boxes', []):
@@ -831,24 +1253,39 @@ class COL3DViewport(QWidget): #vers 2
             return
 
         # - Pan (left drag on background)
-        # - Drag-select (LMB held after face click — paint-brush selection)
+        # - Drag-select (LMB held after click — paint-brush selection)
         if self._drag_selecting and (event.buttons() & Qt.MouseButton.LeftButton):
             mx2, my2 = event.position().x(), event.position().y()
-            fi, face = self._pick_face(mx2, my2)
+            mode = getattr(self, '_select_mode', 'face')
             shift_held = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            if fi is not None and fi not in self._selected_faces:
-                if self._paint_mode and not shift_held:
-                    # Paint mode drag without shift: paint face
-                    if hasattr(face, 'material'):
-                        if hasattr(face.material, 'material_id'):
-                            face.material.material_id = self._paint_material
-                        else:
-                            face.material = self._paint_material
-                # Shift held OR not in paint mode: just add to selection
-                self._selected_faces.add(fi)
-                if self.on_face_selected and not shift_held:
-                    self.on_face_selected(fi, face)
-                self.update()
+
+            if mode == 'vertex':
+                vi, _ = self._pick_vertex(mx2, my2)
+                if vi is not None and vi not in self._selected_verts:
+                    self._selected_verts.add(vi)
+                    self.update()
+
+            elif mode == 'edge':
+                ek, _ = self._pick_edge(mx2, my2)
+                if ek is not None and ek not in self._selected_edges:
+                    self._selected_edges.add(ek)
+                    self.update()
+
+            else:  # 'face' / 'poly' — original paint-aware behaviour preserved
+                fi, face = self._pick_face(mx2, my2)
+                if fi is not None and fi not in self._selected_faces:
+                    if self._paint_mode and not shift_held:
+                        # Paint mode drag without shift: paint face
+                        if hasattr(face, 'material'):
+                            if hasattr(face.material, 'material_id'):
+                                face.material.material_id = self._paint_material
+                            else:
+                                face.material = self._paint_material
+                    # Shift held OR not in paint mode: just add to selection
+                    self._selected_faces.add(fi)
+                    if self.on_face_selected and not shift_held:
+                        self.on_face_selected(fi, face)
+                    self.update()
 
         elif self._left_drag and (event.buttons() & Qt.MouseButton.LeftButton):
             d = event.position() - self._left_drag
@@ -1846,6 +2283,286 @@ class _ModelListDelegate(QStyledItemDelegate):
         return QSize(w, max(72, r.height() + 12))
 
 
+
+
+class RibbonManagerDialog(QDialog): #vers 1
+    """Ribbon Manager — two-pane dialog for managing QToolBar layout.
+    Left pane: list of toolbars. Right pane: actions in selected toolbar.
+    Drag actions between toolbars to reassign. Create/delete toolbars.
+    Save/load named presets. All changes apply live via QAction
+    removeAction()/addAction() and QMainWindow addToolBar()."""
+
+    ##Methods list -
+    # RibbonManagerDialog.__init__
+    # RibbonManagerDialog._build_ui
+    # RibbonManagerDialog._refresh_toolbar_list
+    # RibbonManagerDialog._refresh_action_list
+    # RibbonManagerDialog._on_toolbar_selected
+    # RibbonManagerDialog._move_action
+    # RibbonManagerDialog._create_toolbar
+    # RibbonManagerDialog._delete_toolbar
+    # RibbonManagerDialog._save_preset
+    # RibbonManagerDialog._load_preset
+    # RibbonManagerDialog._on_accept
+    # RibbonManagerDialog._on_cancel
+
+    def __init__(self, workshop, parent=None): #vers 1
+        super().__init__(parent)
+        self._ws = workshop
+        self._mw = getattr(workshop, '_inner_mw', None)
+        self._selected_tb = None
+        self._cancel_state = None
+        self.setWindowTitle("Ribbon Manager")
+        self.setMinimumSize(660, 440)
+        self._build_ui()
+        self._refresh_toolbar_list()
+        # Snapshot current state for cancel
+        if self._mw:
+            self._cancel_state = self._mw.saveState()
+
+    def _build_ui(self): #vers 1
+        from PyQt6.QtWidgets import (QSplitter, QListWidget, QListWidgetItem,
+            QDialogButtonBox, QAbstractItemView)
+        outer = QVBoxLayout(self)
+
+        # Toolbar row
+        tb_row = QHBoxLayout()
+        self._new_btn = QPushButton("+ New Toolbar")
+        self._del_btn = QPushButton("Delete")
+        self._save_preset_btn = QPushButton("Save Preset…")
+        self._load_preset_btn = QPushButton("Load Preset…")
+        for b in (self._new_btn, self._del_btn,
+                  self._save_preset_btn, self._load_preset_btn):
+            tb_row.addWidget(b)
+        tb_row.addStretch()
+        self._new_btn.clicked.connect(self._create_toolbar)
+        self._del_btn.clicked.connect(self._delete_toolbar)
+        self._save_preset_btn.clicked.connect(self._save_preset)
+        self._load_preset_btn.clicked.connect(self._load_preset)
+        outer.addLayout(tb_row)
+
+        # Splitter: left = toolbar list, right = action list
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        outer.addWidget(splitter, stretch=1)
+
+        # Left pane
+        left = QWidget()
+        ll = QVBoxLayout(left); ll.setSpacing(4)
+        ll.addWidget(QLabel("Toolbars"))
+        self._tb_list = QListWidget()
+        self._tb_list.currentRowChanged.connect(self._on_toolbar_selected)
+        ll.addWidget(self._tb_list)
+        splitter.addWidget(left)
+
+        # Right pane
+        right = QWidget()
+        rl = QVBoxLayout(right); rl.setSpacing(4)
+        self._action_label = QLabel("Select a toolbar")
+        rl.addWidget(self._action_label)
+        self._act_list = QListWidget()
+        self._act_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove)
+        self._act_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._act_list.setIconSize(QSize(24, 24))
+        self._act_list.model().rowsMoved.connect(self._on_action_reordered)
+        rl.addWidget(self._act_list)
+
+        # Move-to-toolbar button row
+        move_row = QHBoxLayout()
+        move_row.addWidget(QLabel("Move selected to:"))
+        self._move_combo = QComboBox()
+        move_row.addWidget(self._move_combo, stretch=1)
+        self._move_btn = QPushButton("Move →")
+        self._move_btn.clicked.connect(self._move_action)
+        move_row.addWidget(self._move_btn)
+        rl.addLayout(move_row)
+        splitter.addWidget(right)
+        splitter.setSizes([200, 440])
+
+        # OK / Cancel
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self._on_cancel)
+        outer.addWidget(btns)
+
+    def _refresh_toolbar_list(self): #vers 1
+        """Populate left pane with all QToolBar instances."""
+        from PyQt6.QtWidgets import QToolBar, QListWidgetItem
+        self._tb_list.clear()
+        self._move_combo.clear()
+        if not self._mw:
+            return
+        for tb in self._mw.findChildren(QToolBar):
+            name = tb.windowTitle() or tb.objectName()
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, tb)
+            # Show first action's icon as preview
+            acts = [a for a in tb.actions() if not a.isSeparator() and a.icon()]
+            if acts:
+                item.setIcon(acts[0].icon())
+            self._tb_list.addItem(item)
+            self._move_combo.addItem(name, tb)
+
+    def _on_toolbar_selected(self, row): #vers 1
+        item = self._tb_list.item(row)
+        if not item:
+            return
+        self._selected_tb = item.data(Qt.ItemDataRole.UserRole)
+        self._refresh_action_list()
+
+    def _refresh_action_list(self): #vers 1
+        """Populate right pane with actions in the selected toolbar."""
+        from PyQt6.QtWidgets import QListWidgetItem
+        self._act_list.clear()
+        tb = self._selected_tb
+        if not tb:
+            return
+        name = tb.windowTitle() or tb.objectName()
+        self._action_label.setText(f"{name} — actions")
+        for act in tb.actions():
+            if act.isSeparator():
+                item = QListWidgetItem("── separator ──")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+            else:
+                item = QListWidgetItem(act.text() or act.toolTip() or "Action")
+                if act.icon():
+                    item.setIcon(act.icon())
+            item.setData(Qt.ItemDataRole.UserRole, act)
+            self._act_list.addItem(item)
+
+    def _on_action_reordered(self): #vers 1
+        """After drag-reorder in the action list, apply new order to toolbar."""
+        tb = self._selected_tb
+        if not tb:
+            return
+        # Read new order from the list widget
+        new_order = []
+        for i in range(self._act_list.count()):
+            act = self._act_list.item(i).data(Qt.ItemDataRole.UserRole)
+            if act:
+                new_order.append(act)
+        # Remove and re-add all actions in new order
+        for act in list(tb.actions()):
+            tb.removeAction(act)
+        for act in new_order:
+            tb.addAction(act)
+
+    def _move_action(self): #vers 1
+        """Move selected action from current toolbar to the target toolbar."""
+        act_item = self._act_list.currentItem()
+        if not act_item:
+            return
+        act = act_item.data(Qt.ItemDataRole.UserRole)
+        if not act or not self._selected_tb:
+            return
+        target_tb = self._move_combo.currentData()
+        if not target_tb or target_tb is self._selected_tb:
+            return
+        self._selected_tb.removeAction(act)
+        target_tb.addAction(act)
+        self._refresh_action_list()
+
+    def _create_toolbar(self): #vers 1
+        """Create a new empty QToolBar and add it to the inner QMainWindow."""
+        from PyQt6.QtWidgets import QInputDialog, QToolBar
+        if not self._mw:
+            return
+        name, ok = QInputDialog.getText(self, "New Toolbar", "Toolbar name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        tb = QToolBar(name, self._mw)
+        tb.setObjectName(name)
+        tb.setMovable(True)
+        tb.setFloatable(True)
+        tb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tb.customContextMenuRequested.connect(
+            lambda pos, t=tb: self._ws._toolbar_context_menu(t, pos))
+        self._mw.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+        self._refresh_toolbar_list()
+
+    def _delete_toolbar(self): #vers 1
+        """Delete the selected toolbar, moving its actions to Unassigned."""
+        from PyQt6.QtWidgets import QMessageBox
+        tb = self._selected_tb
+        if not tb:
+            return
+        n_acts = len([a for a in tb.actions() if not a.isSeparator()])
+        if n_acts > 0:
+            ans = QMessageBox.question(
+                self, "Delete Toolbar",
+                f"'{tb.windowTitle()}' has {n_acts} action(s).\n"
+                "They will be removed from all toolbars.\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        self._mw.removeToolBar(tb)
+        tb.deleteLater()
+        self._selected_tb = None
+        self._refresh_toolbar_list()
+        self._act_list.clear()
+
+    def _save_preset(self): #vers 1
+        """Save current toolbar layout as a named preset."""
+        from PyQt6.QtWidgets import QInputDialog
+        import json
+        from pathlib import Path
+        if not self._mw:
+            return
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+        path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = {}
+        presets = data.setdefault('toolbar_presets', {})
+        presets[name.strip()] = self._mw.saveState().toHex().data().decode()
+        path.write_text(json.dumps(data, indent=2))
+        self._ws._set_status(f"Preset '{name.strip()}' saved")
+
+    def _load_preset(self): #vers 1
+        """Load a named preset."""
+        from PyQt6.QtWidgets import QInputDialog
+        from PyQt6.QtCore import QByteArray
+        import json
+        from pathlib import Path
+        if not self._mw:
+            return
+        path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = {}
+        presets = data.get('toolbar_presets', {})
+        if not presets:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Load Preset", "No saved presets found.")
+            return
+        name, ok = QInputDialog.getItem(
+            self, "Load Preset", "Select preset:",
+            list(presets.keys()), editable=False)
+        if not ok:
+            return
+        self._mw.restoreState(QByteArray.fromHex(presets[name].encode()))
+        self._refresh_toolbar_list()
+        self._ws._set_status(f"Preset '{name}' loaded")
+
+    def _on_accept(self): #vers 1
+        """Apply and save state."""
+        self._ws._save_toolbar_state()
+        self.accept()
+
+    def _on_cancel(self): #vers 1
+        """Restore pre-dialog state."""
+        if self._cancel_state and self._mw:
+            self._mw.restoreState(self._cancel_state)
+        self.reject()
+
+
 class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
     """Model Workshop - Main window"""
 
@@ -2771,7 +3488,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             except Exception:
                 pass
             if pw:
-                b.clicked.connect(lambda _=False, s=style, p=pw: p.set_render_style(s))
+                rev = {'wire': 'wireframe', 'semi': 'solid', 'solid': 'solid', 'textured': 'textured'}
+                b.clicked.connect(lambda _=False, s=style, p=pw: p.set_render_mode(rev.get(s, 'solid')))
             prev_row.addWidget(b)
             _prev_btns.append((b, label))
         prev_row.addStretch()
@@ -2910,14 +3628,18 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         dlg.exec()
 
 
-    def _cycle_view_render_style(self): #vers 1
-        """Cycle viewport render: wireframe -> semi -> solid."""
+    def _cycle_view_render_style(self): #vers 2
+        """Cycle viewport render: wireframe -> solid -> textured."""
         pw = getattr(self, 'preview_widget', None)
         if not pw: return
-        modes = ['wireframe','semi','solid','textured']
-        cur = getattr(pw, '_render_style', 'semi')
-        pw._render_style = modes[(modes.index(cur)+1) % len(modes)] if cur in modes else 'semi'
-        pw.update()
+        modes = ['wireframe', 'solid', 'textured']
+        cur = getattr(pw, '_mode', 'solid')
+        nxt = modes[(modes.index(cur) + 1) % len(modes)] if cur in modes else 'solid'
+        if hasattr(pw, 'set_render_mode'):
+            pw.set_render_mode(nxt)
+        else:
+            pw._mode = nxt
+            pw.update()
 
 
     def _open_paint_editor(self): #vers 5
@@ -3808,13 +4530,12 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             self._open_file(self.current_file_path)
 
 
-    def _open_render_settings_dialog(self): #vers 1
+    def _open_render_settings_dialog(self): #vers 2
         """Render & background settings dialog."""
         from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                                     QComboBox, QSlider, QPushButton, QColorDialog,
-                                     QGroupBox, QDialogButtonBox, QCheckBox)
+                                     QComboBox, QPushButton, QColorDialog,
+                                     QGroupBox, QDialogButtonBox)
         from PyQt6.QtGui import QColor
-        from PyQt6.QtCore import Qt
 
         pw = getattr(self, 'preview_widget', None)
         if not pw: return
@@ -3829,31 +4550,35 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         sg = QHBoxLayout(style_grp)
         sg.addWidget(QLabel("Style:"))
         style_combo = QComboBox()
-        style_combo.addItems(["Wireframe", "Semi-transparent", "Solid"])
-        mapping = {"wireframe":"Wireframe","semi":"Semi-transparent","solid":"Solid"}
-        style_combo.setCurrentText(mapping.get(pw._render_style, "Semi-transparent"))
+        style_combo.addItems(["Wireframe", "Solid", "Textured"])
+        mapping = {"wireframe": "Wireframe", "solid": "Solid", "textured": "Textured"}
+        cur_mode = getattr(pw, '_mode', 'solid')
+        style_combo.setCurrentText(mapping.get(cur_mode, "Solid"))
         sg.addWidget(style_combo)
         lay.addWidget(style_grp)
 
         # Background
         bg_grp = QGroupBox("Background")
         bg = QHBoxLayout(bg_grp)
-        r,g,b = pw._bg_color
+        override = getattr(pw, '_bg_color_override', None)
+        r, g, b = override if override is not None else (
+            pw._get_ui_color('bg_panel').red(),
+            pw._get_ui_color('bg_panel').green(),
+            pw._get_ui_color('bg_panel').blue())
         bg_preview = QPushButton("  ")
         bg_preview.setFixedSize(60, 28)
         bg_preview.setStyleSheet(f"background-color: rgb({r},{g},{b});")
         def _pick_bg():
-            c = QColorDialog.getColor(QColor(r,g,b), dlg, "Background Colour")
+            c = QColorDialog.getColor(QColor(r, g, b), dlg, "Background Colour")
             if c.isValid():
                 bg_preview.setStyleSheet(f"background-color: {c.name()};")
                 bg_preview.setProperty("chosen", (c.red(), c.green(), c.blue()))
         bg_preview.clicked.connect(_pick_bg)
         bg.addWidget(QLabel("Colour:"))
         bg.addWidget(bg_preview)
-
-        scene_cb = QComboBox()
-        scene_cb.addItems(["Dark", "Mid", "Light"])
-        bg.addWidget(scene_cb)
+        reset_btn = QPushButton("Use Theme")
+        reset_btn.clicked.connect(lambda: bg_preview.setProperty("reset_to_theme", True))
+        bg.addWidget(reset_btn)
         lay.addWidget(bg_grp)
 
         # Buttons
@@ -3862,11 +4587,14 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         btns.rejected.connect(dlg.reject)
         def _apply():
             s = style_combo.currentText()
-            rev = {"Wireframe":"wireframe","Semi-transparent":"semi","Solid":"solid"}
-            pw.set_render_style(rev.get(s,"semi"))
-            chosen = bg_preview.property("chosen")
-            if chosen:
-                pw.set_background_color(chosen)
+            rev = {"Wireframe": "wireframe", "Solid": "solid", "Textured": "textured"}
+            pw.set_render_mode(rev.get(s, "solid"))
+            if bg_preview.property("reset_to_theme"):
+                pw.set_checkerboard_background()
+            else:
+                chosen = bg_preview.property("chosen")
+                if chosen:
+                    pw.set_background_color(chosen)
             dlg.accept()
         btns.accepted.connect(_apply)
         lay.addWidget(btns)
@@ -5337,18 +6065,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
 
     def closeEvent(self, event): #vers 2
-        """Handle close event"""
-        try:
-            for attr in ('_mod_left_toolbar', '_mod_right_toolbar'):
-                tb = getattr(self, attr, None)
-                if tb and hasattr(tb, 'save_layout'):
-                    tb.save_layout()
-            if hasattr(self, '_quad_container'):
-                self._save_quad_layout()
-        except Exception:
-            pass
+        """Handle close — _save_toolbar_state fires via window_closed signal."""
         self.window_closed.emit()
-        # Remove injected tool menu from imgfactory menubar
         try:
             mw = getattr(self, 'main_window', None) or getattr(self, '_imgfactory', None)
             if mw and hasattr(mw, '_update_tool_menu_for_tab'):
@@ -5473,6 +6191,15 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.open_dff_btn.setShortcut("Ctrl+D")
         self.open_dff_btn.clicked.connect(self._open_dff_standalone)
 
+        self.load_txd_btn = QPushButton("TXD")
+        self.load_txd_btn.setFont(self.button_font)
+        self.load_txd_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
+        self.load_txd_btn.setIconSize(QSize(16, 16))
+        self.load_txd_btn.setFixedHeight(26)
+        self.load_txd_btn.setMinimumWidth(80)
+        self.load_txd_btn.setToolTip("Open TXD — uses IDE link if available, else browse")
+        self.load_txd_btn.clicked.connect(self._open_txd_smart)
+
         # GL Model Viewer button
         self.gl_viewer_btn = QPushButton()
         self.gl_viewer_btn.setFont(self.button_font)
@@ -5536,6 +6263,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.export_tex_btn.setToolTip("Export textures as png, tga, dss or other formats")
         self.export_tex_btn.clicked.connect(self.export_all)
         self.export_tex_btn.setEnabled(True)
+
+
 
         self.undo_btn = QPushButton()
         self.undo_btn.setFont(self.button_font)
@@ -6212,10 +6941,18 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         else:
             self._wire_col_buttons()
 
-        # DFF-only toolbar buttons (V/E/F/P select, backface, front-paint, primitive)
+        # DFF-only toolbar buttons (backface, front-paint, primitive, etc.)
+        # V/E/F/P select buttons are gated separately by
+        # _update_select_mode_availability (need an actual model, not just
+        # DFF-vs-COL mode) so they're excluded from this blanket pass.
+        _select_btn_attrs = {'_sel_vert_btn', '_sel_edge_btn',
+                              '_sel_face_btn', '_sel_poly_btn'}
         for btn in getattr(self, '_dff_only_toolbar_btns', []):
-            btn.setEnabled(dff_mode)
+            is_select_btn = any(btn is getattr(self, a, None) for a in _select_btn_attrs)
             btn.setVisible(dff_mode)
+            if not is_select_btn:
+                btn.setEnabled(dff_mode)
+        self._update_select_mode_availability()
 
         # Prelighting row — shown in DFF mode
         for attr in ('prelight_apply_btn', 'prelight_setup_btn'):
@@ -6471,16 +7208,70 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             vp.update()
         self._set_status(f"Geometry [{idx}] duplicated.")
 
-    def _set_select_mode(self, mode: str): #vers 1
-        """Set viewport selection mode: vertex / edge / face / poly / object."""
+    def _mirror_dialog(self): #vers 1
+        """STUB: Mirror selected geometry across a chosen axis."""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Mirror",
+            "Mirror is not yet implemented.\n"
+            "Coming in a future build.")
+
+    def _align_dialog(self): #vers 1
+        """STUB: Align selection to another object or the world grid."""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(self, "Align",
+            "Align is not yet implemented.\n"
+            "Coming in a future build.")
+
+    def _set_select_mode(self, mode: str): #vers 2
+        """Set viewport selection mode: vertex / edge / face / poly / object.
+        Switching modes clears the other modes' selection sets, so there is
+        no stale hidden selection left over when the user switches back."""
         vp = getattr(self, 'preview_widget', None)
         if vp:
             vp._select_mode = mode
+            if mode != 'vertex':
+                vp._selected_verts.clear()
+            if mode != 'edge':
+                vp._selected_edges.clear()
+            if mode not in ('face', 'poly'):
+                vp._selected_faces.clear()
             vp.update()
         self._set_status(f"Select mode: {mode}")
         mw = self.main_window
         if mw and hasattr(mw, 'log_message'):
             mw.log_message(f"Model Workshop: select mode → {mode}")
+
+    def _update_select_mode_availability(self): #vers 1
+        """Enable vertex/edge/face/poly select buttons only when there is
+        an actual model (DFF geometry or COL surfaces) to select from.
+        Called after load, after creating a primitive from scratch, and
+        whenever the active model is cleared."""
+        has_dff = bool(getattr(self, '_current_dff_model', None) and
+                       getattr(self._current_dff_model, 'geometries', None))
+        has_col = bool(getattr(self, 'current_col_file', None) and
+                       getattr(self.current_col_file, 'models', None))
+        has_model = has_dff or has_col
+        for attr in ('_sel_vert_btn', '_sel_edge_btn',
+                     '_sel_face_btn', '_sel_poly_btn'):
+            b = getattr(self, attr, None)
+            if b:
+                b.setEnabled(has_model)
+        if not has_model:
+            vp = getattr(self, 'preview_widget', None)
+            if vp:
+                vp._select_mode = 'object'
+                vp._selected_verts.clear()
+                vp._selected_edges.clear()
+                vp._selected_faces.clear()
+                vp.update()
+            grp = getattr(self, '_select_mode_group', None)
+            if grp:
+                grp.setExclusive(False)
+                for attr in ('_sel_vert_btn', '_sel_edge_btn',
+                             '_sel_face_btn', '_sel_poly_btn'):
+                    b = getattr(self, attr, None)
+                    if b: b.setChecked(False)
+                grp.setExclusive(True)
 
     def _toggle_backface_cull(self): #vers 1
         """Toggle backface culling — when ON only the front face is visible/selectable."""
@@ -6578,6 +7369,44 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Primitive Error", str(e))
+
+    def _extrude_dialog(self): #vers 1
+        """Prompt for extrude distance and apply to the current face/poly
+        selection in the viewport. Positive = outward, negative = inward
+        (push-in, e.g. a recessed door/window/vent)."""
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+        vp = getattr(self, 'preview_widget', None)
+        if vp is None:
+            return
+
+        mode = getattr(vp, '_select_mode', 'face')
+        if mode not in ('face', 'poly'):
+            QMessageBox.information(self, "Extrude",
+                "Switch to Face or Polygon select mode and select one or "
+                "more faces first.")
+            return
+
+        if not getattr(vp, '_selected_faces', None):
+            QMessageBox.information(self, "Extrude",
+                "Select one or more faces first, then Extrude.")
+            return
+
+        distance, ok = QInputDialog.getDouble(
+            self, "Extrude", "Distance (negative = push in):",
+            0.5, -1000.0, 1000.0, 3)
+        if not ok or distance == 0.0:
+            return
+
+        try:
+            success = vp._extrude_selected_faces(distance)
+            if success:
+                self._set_status(f"Extruded {len(vp._selected_faces)} face(s) by {distance:.3f}")
+            else:
+                QMessageBox.warning(self, "Extrude",
+                    "Nothing to extrude — load a DFF and select faces first.")
+        except Exception as e:
+            QMessageBox.warning(self, "Extrude Error", str(e))
 
     def _build_primitive(self, shape: str,
                           w: float, h: float, d: float,
@@ -6693,27 +7522,37 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         return verts, tris
 
     def _add_geometry_to_dff(self, verts: list, tris: list,
-                              name: str = "primitive"): #vers 1
+                              name: str = "primitive"): #vers 2
         """Add a new geometry to the current DFF model from raw verts+tris.
-        Creates a minimal DFF geometry object and refreshes the viewport."""
-        import types, math
+        If no DFF model is loaded yet, creates a new blank one first so
+        primitives can be built completely from scratch.
+        Builds a real Geometry/Triangle/Vector3 (not a duck-typed stand-in)
+        so the result is identical to a loaded DFF and saves correctly."""
+        import math
+        from apps.components.Model_Editor.depends.dff_classes import (
+            DFFModel, Geometry, Triangle, Vector3, TexCoord, Frame, Atomic,
+            BoundingSphere)
 
         model = getattr(self, '_current_dff_model', None)
         if model is None:
-            raise RuntimeError("No DFF loaded. Load a DFF file first.")
+            # Nothing loaded — create a brand new empty model with one
+            # root frame so the primitive has somewhere to attach.
+            model = DFFModel()
+            model.frames.append(Frame(name="root", parent_index=-1))
+            self._current_dff_model = model
+            self._current_dff_path = None
+            self.current_col_file = None
+            if hasattr(self, 'format_combo'):
+                self.format_combo.setVisible(False)
 
-        # Build a minimal geometry-like object the viewport can render
-        # The DFF geometry stores vertex positions and face indices
-        geom = types.SimpleNamespace()
-        geom.vertices  = verts
-        geom.faces     = tris
-        geom.normals   = []
-        geom.uv_layers = []
-        geom.materials = []
-        geom.name      = name
+        geom = Geometry()
+        geom.vertices = [Vector3(x, y, z) for (x, y, z) in verts]
+        geom.triangles = [Triangle(v1=i0, v2=i1, v3=i2, material_id=0)
+                           for (i0, i1, i2) in tris]
+        geom.uv_layers = [[TexCoord(0.0, 0.0) for _ in verts]]
 
-        # Calculate normals per face → per vertex (flat shading)
-        vert_normals = [(0.0, 0.0, 0.0)] * len(verts)
+        # Per-vertex normals: accumulate face normals, then normalise
+        vert_normals = [[0.0, 0.0, 0.0] for _ in verts]
         for i0, i1, i2 in tris:
             v0, v1, v2 = verts[i0], verts[i1], verts[i2]
             ax, ay, az = v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]
@@ -6724,24 +7563,35 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             ln = math.sqrt(nx*nx + ny*ny + nz*nz) or 1.0
             nx, ny, nz = nx/ln, ny/ln, nz/ln
             for idx in (i0, i1, i2):
-                ox, oy, oz = vert_normals[idx]
-                vert_normals[idx] = (ox+nx, oy+ny, oz+nz)
-        # Normalise accumulated normals
-        geom.normals = []
+                vert_normals[idx][0] += nx
+                vert_normals[idx][1] += ny
+                vert_normals[idx][2] += nz
+        normals = []
         for nx, ny, nz in vert_normals:
             ln = math.sqrt(nx*nx + ny*ny + nz*nz) or 1.0
-            geom.normals.append((nx/ln, ny/ln, nz/ln))
+            normals.append(Vector3(nx/ln, ny/ln, nz/ln))
+        geom.normals = normals
 
-        # Append to model geometries
-        if not hasattr(model, 'geometries'):
-            model.geometries = []
+        # Bounding sphere — centre + radius enclosing all verts
+        if verts:
+            cx = sum(v[0] for v in verts) / len(verts)
+            cy = sum(v[1] for v in verts) / len(verts)
+            cz = sum(v[2] for v in verts) / len(verts)
+            radius = max(math.sqrt((v[0]-cx)**2 + (v[1]-cy)**2 + (v[2]-cz)**2)
+                         for v in verts)
+            geom.bounding_sphere = BoundingSphere(center=Vector3(cx, cy, cz),
+                                                   radius=radius)
+
+        geom_index = len(model.geometries)
         model.geometries.append(geom)
-        if not hasattr(model, 'geometry_count'):
-            model.geometry_count = 0
-        model.geometry_count = len(model.geometries)
 
-        # Refresh viewport
+        # New geometry needs a frame + atomic to attach to so the frame
+        # hierarchy / Model Viewer can see it; attach to the root frame.
+        model.atomics.append(Atomic(frame_index=0, geometry_index=geom_index))
+
+        # Refresh viewport / mesh list
         self._display_dff_model(model)
+        self._update_select_mode_availability()
         mw = self.main_window
         if mw and hasattr(mw, 'log_message'):
             mw.log_message(
@@ -6749,8 +7599,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
 
     def _create_transform_icon_panel(self): #vers 13
-        """Icon grid panel - DockableToolbar pattern (same as COL Workshop)."""
-        from apps.components.Model_Editor.dockable_toolbar import DockableToolbar
+        """STUB: replaced by _build_toolbars / QToolBar system."""
+        return None  # no longer used
         from PyQt6.QtWidgets import QGridLayout
         icon_color = self._get_icon_color()
 
@@ -6795,7 +7645,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.flip_vert_btn.setFixedHeight(btn_height)
         self.flip_vert_btn.setMinimumWidth(btn_width)
         self.flip_vert_btn.setEnabled(False)
-        self.flip_vert_btn.setToolTip("Flip col vertically")
+        self.flip_vert_btn.setToolTip("Flip model vertically")
         self.flip_vert_btn.clicked.connect(lambda: getattr(self,"preview_widget",None) and self.preview_widget.flip_vertical())
         layout.addWidget(self.flip_vert_btn)
         layout.addSpacing(spacer)
@@ -6807,7 +7657,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.flip_horz_btn.setFixedHeight(btn_height)
         self.flip_horz_btn.setMinimumWidth(btn_width)
         self.flip_horz_btn.setEnabled(False)
-        self.flip_horz_btn.setToolTip("Flip col horizontally")
+        self.flip_horz_btn.setToolTip("Flip model horizontally")
         self.flip_horz_btn.clicked.connect(lambda: getattr(self,"preview_widget",None) and self.preview_widget.flip_horizontal())
         layout.addWidget(self.flip_horz_btn)
         layout.addSpacing(spacer)
@@ -6844,7 +7694,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.analyze_btn.setMinimumWidth(btn_width)
         self.analyze_btn.clicked.connect(self._analyze_collision)
         self.analyze_btn.setEnabled(False)
-        self.analyze_btn.setToolTip("Analyze collision data")
+        self.analyze_btn.setToolTip("Analyse model")
         layout.addWidget(self.analyze_btn)
         layout.addSpacing(spacer)
 
@@ -6855,7 +7705,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.copy_btn.setFixedHeight(btn_height)
         self.copy_btn.setMinimumWidth(btn_width)
         self.copy_btn.setEnabled(False)
-        self.copy_btn.setToolTip("Copy col to clipboard")
+        self.copy_btn.setToolTip("Copy model to clipboard")
         self.copy_btn.clicked.connect(self._copy_surface)
         layout.addWidget(self.copy_btn)
         layout.addSpacing(spacer)
@@ -6867,7 +7717,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.paste_btn.setFixedHeight(btn_height)
         self.paste_btn.setMinimumWidth(btn_width)
         self.paste_btn.setEnabled(False)
-        self.paste_btn.setToolTip("Paste col from clipboard")
+        self.paste_btn.setToolTip("Paste model from clipboard")
         self.paste_btn.clicked.connect(self._paste_surface)
         layout.addWidget(self.paste_btn)
         layout.addSpacing(spacer)
@@ -6965,6 +7815,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             except Exception:
                 b.setText(mode[0].upper())
             b.clicked.connect(lambda _=False, m=mode: self._set_select_mode(m))
+            b.setEnabled(False)   # re-enabled once a model exists — see _update_select_mode_availability
             setattr(self, attr, b)
             self._mod_icon_buttons.append(b)
             return b
@@ -6973,6 +7824,15 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         _sel_btn('_sel_edge_btn',  'Edge select — click edges between vertices',  'edge',   'edge_select_icon')
         _sel_btn('_sel_face_btn',  'Face select — click individual triangles',    'face',   'face_select_icon')
         _sel_btn('_sel_poly_btn',  'Polygon select — click connected face groups','poly',   'poly_select_icon')
+
+        # Mutual exclusivity — only one sub-object select mode active at a time
+        from PyQt6.QtWidgets import QButtonGroup
+        self._select_mode_group = QButtonGroup(self)
+        self._select_mode_group.setExclusive(True)
+        for b in (self._sel_vert_btn, self._sel_edge_btn,
+                  self._sel_face_btn, self._sel_poly_btn):
+            self._select_mode_group.addButton(b)
+        self._sel_face_btn.setChecked(True)   # default mode matches self._select_mode = 'face'
 
         # Backface cull toggle
         self._backface_cull_btn = QPushButton()
@@ -7025,6 +7885,21 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             self._prim_btn.setText("+□")
         self._prim_btn.clicked.connect(self._create_primitive_dialog)
         self._mod_icon_buttons.append(self._prim_btn)
+
+        # Extrude selected face(s) button
+        self._extrude_btn = QPushButton()
+        self._extrude_btn.setFixedSize(btn_width, btn_height)
+        self._extrude_btn.setToolTip(
+            "Extrude selected face(s) along their normal\n"
+            "Positive distance = outward, negative = push in (door/window/vent)\n"
+            "Select faces in Face or Polygon mode first")
+        self._extrude_btn.setIconSize(icon_size)
+        try:
+            self._extrude_btn.setIcon(self.icon_factory.add_icon(color=icon_color))
+        except Exception:
+            self._extrude_btn.setText("Ext")
+        self._extrude_btn.clicked.connect(self._extrude_dialog)
+        self._mod_icon_buttons.append(self._extrude_btn)
 
         # Store refs to DFF-only buttons for enable/disable
         # Shading on/off toggle
@@ -7186,7 +8061,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.flip_vert_btn.setFont(self.button_font)
         self.flip_vert_btn.setFixedHeight(btn_height)
         self.flip_vert_btn.setEnabled(False)
-        self.flip_vert_btn.setToolTip("Flip col vertically")
+        self.flip_vert_btn.setToolTip("Flip model vertically")
         self.flip_vert_btn.clicked.connect(lambda: getattr(self,"preview_widget",None) and self.preview_widget.flip_vertical())
         layout.addWidget(self.flip_vert_btn)
         layout.addSpacing(spacer)
@@ -7196,7 +8071,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.flip_horz_btn.setFont(self.button_font)
         self.flip_horz_btn.setFixedHeight(btn_height)
         self.flip_horz_btn.setEnabled(False)
-        self.flip_horz_btn.setToolTip("Flip col horizontally")
+        self.flip_horz_btn.setToolTip("Flip model horizontally")
         self.flip_horz_btn.clicked.connect(lambda: getattr(self,"preview_widget",None) and self.preview_widget.flip_horizontal())
         layout.addWidget(self.flip_horz_btn)
         layout.addSpacing(spacer)
@@ -7222,31 +8097,31 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         layout.addSpacing(spacer)
 
         # Analyze
-        self.analyze_btn = QPushButton("Analyze")
+        self.analyze_btn = QPushButton("Analyse Model")
         self.analyze_btn.setFont(self.button_font)
         self.analyze_btn.setFixedHeight(btn_height)
         self.analyze_btn.clicked.connect(self._analyze_collision)
         self.analyze_btn.setEnabled(False)
-        self.analyze_btn.setToolTip("Analyze collision data")
+        self.analyze_btn.setToolTip("Analyse model")
         layout.addWidget(self.analyze_btn)
         layout.addSpacing(spacer)
 
         # Copy
-        self.copy_btn = QPushButton("Copy")
+        self.copy_btn = QPushButton("Copy Model")
         self.copy_btn.setFont(self.button_font)
         self.copy_btn.setFixedHeight(btn_height)
         self.copy_btn.setEnabled(False)
-        self.copy_btn.setToolTip("Copy col to clipboard")
+        self.copy_btn.setToolTip("Copy model to clipboard")
         self.copy_btn.clicked.connect(self._copy_surface)
         layout.addWidget(self.copy_btn)
         layout.addSpacing(spacer)
 
         # Paste
-        self.paste_btn = QPushButton("Paste")
+        self.paste_btn = QPushButton("Paste Model")
         self.paste_btn.setFont(self.button_font)
         self.paste_btn.setFixedHeight(btn_height)
         self.paste_btn.setEnabled(False)
-        self.paste_btn.setToolTip("Paste col from clipboard")
+        self.paste_btn.setToolTip("Paste model from clipboard")
         self.paste_btn.clicked.connect(self._paste_surface)
         layout.addWidget(self.paste_btn)
         layout.addSpacing(spacer)
@@ -7442,12 +8317,10 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             self._import_model)
         btn_layout.addWidget(self.import_btn)
 
-        # Export (COL, CST, OBS, 3DS, OBJ…)
+        # Export (multiple formats — geometry + COL)
         self.export_col_btn = _icon_btn(
-            self.icon_factory.export_icon(color=icon_color)
-                if hasattr(self.icon_factory, 'export_icon')
-                else self.icon_factory.package_icon(color=icon_color),
-            "Export — COL, CST, OBS, 3DS, OBJ and other formats",
+            self.icon_factory.multi_export_icon(color=icon_color),
+            "Export — OBJ, COL, 3DS, FBX and other formats",
             self._export_model_menu)
         btn_layout.addWidget(self.export_col_btn)
 
@@ -7457,6 +8330,13 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             "Undo last change",
             self._undo_last_action)
         btn_layout.addWidget(self.undo_col_btn)
+
+        # 3D View
+        self._mini_3d_btn = _icon_btn(
+            self.icon_factory.viewport_icon(color=icon_color),
+            "Open GL Model Viewer",
+            self._open_gl_viewer)
+        btn_layout.addWidget(self._mini_3d_btn)
 
         btn_layout.addStretch()
         layout.addWidget(self._middle_btn_row)
@@ -7519,6 +8399,43 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self.mod_compact_list.setItemDelegate(_ModelListDelegate(self.mod_compact_list))
         layout.addWidget(self.mod_compact_list)
 
+        samerow_layout = QHBoxLayout()
+        samerow_label = QLabel("")
+        self.load_txd_btn = QPushButton("TXD") #TODO; This needs to be added to load dff, on standalone and docked.
+                                               #      both looking for the same name "not matter the letter case.txd or Case.TXD, if not found ask for it, or skip.
+        self.load_txd_btn.setFont(self.button_font)
+        self.load_txd_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
+        self.load_txd_btn.setIconSize(QSize(16, 16))
+        self.load_txd_btn.setFixedHeight(26)
+        self.load_txd_btn.setMinimumWidth(80)
+        self.load_txd_btn.setToolTip("Open TXD — uses IDE link if available, else browse")
+        self.load_txd_btn.clicked.connect(self._open_txd_smart)
+
+        self.export_ojs_btn = QPushButton("Export")
+        self.export_ojs_btn.setFont(self.button_font)
+        self.export_ojs_btn.setFixedHeight(26)
+        self.export_ojs_btn.setToolTip("Export geometry / COL (multiple formats)")
+        self.export_ojs_btn.clicked.connect(self._export_model_menu)
+        try:
+            self.export_ojs_btn.setIcon(self.icon_factory.multi_export_icon(color=icon_color))
+            self.export_ojs_btn.setIconSize(QSize(14, 14))
+        except Exception: pass
+
+        self.gl_viewer_btn = QPushButton("3D View")
+        self.gl_viewer_btn.setFont(self.button_font)
+        self.gl_viewer_btn.setFixedHeight(26)
+        self.gl_viewer_btn.setToolTip("Open GL Model Viewer")
+        self.gl_viewer_btn.clicked.connect(self._open_gl_viewer)
+        try:
+            self.gl_viewer_btn.setIcon(self.icon_factory.viewport_icon(color=icon_color))
+            self.gl_viewer_btn.setIconSize(QSize(14, 14))
+        except Exception: pass
+        samerow_layout.addWidget(self.gl_viewer_btn)
+        samerow_layout.addWidget(self.export_ojs_btn)
+        samerow_layout.addWidget(self.load_txd_btn)
+        samerow_layout.addStretch()
+        layout.addLayout(samerow_layout)   # was never added — fixed
+
         # - Frame / Bone hierarchy tree (DFF only)
         from PyQt6.QtWidgets import QTreeWidget
         self._frame_tree_panel = QFrame()
@@ -7558,248 +8475,523 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         # - Texture panel (shown when TXD loaded)
         layout.addWidget(self._create_texture_panel())
 
+        # Information group below model info group
+
+        name_layout = QHBoxLayout()
+        self.info_name = QLineEdit()
+        self.info_name.setText("Click to edit...") #then "IDE Ref" on the same row
+
+        name_label = QLabel("Model Name:")
+        name_label.setFont(self.panel_font)
+        name_layout.addWidget(name_label)
+
+        self.find_in_ide_btn = QPushButton()
+        self.find_in_ide_btn.setFont(self.button_font)
+        self.find_in_ide_btn.setIcon(self.icon_factory.database_icon(color=icon_color))
+        self.find_in_ide_btn.setIconSize(QSize(18, 18))
+        self.find_in_ide_btn.setFixedSize(28, 28)
+        self.find_in_ide_btn.setToolTip("Look up model in DAT Browser IDE entries")
+        self.find_in_ide_btn.clicked.connect(self._find_in_ide)
+
+        self.info_name.setFont(self.panel_font)
+        self.info_name.setReadOnly(True)
+        self.info_name.setStyleSheet("padding: px; border: 1px solid palette(mid);")
+        self.info_name.mousePressEvent = lambda e: self._enable_name_edit(e, False)
+        name_layout.addWidget(self.info_name)
+        layout.addLayout(name_layout)
+
+        ide_layout = QHBoxLayout()
+        #ide_layout.setSpacing(4)
+        ide_lbl = QLabel("IDE:")
+        ide_lbl.setFont(self.panel_font)
+        ide_lbl.setFixedWidth(28)
+        ide_layout.addWidget(ide_lbl)
+        self.info_ide_section = QLabel("—")
+        self.info_ide_section.setFont(self.panel_font)
+        #self.info_ide_section.setFixedWidth(50)
+        ide_layout.addWidget(self.info_ide_section)
+        self.info_model_id = QLabel("ID: —")
+        self.info_model_id.setFont(self.panel_font)
+        #self.info_model_id.setFixedWidth(40)
+        ide_layout.addWidget(self.info_model_id)
+        txd_lbl = QLabel("TXD:")
+        txd_lbl.setFont(self.panel_font)
+        #txd_lbl.setFixedWidth(32)
+        ide_layout.addWidget(txd_lbl)
+        self.info_txd_name = QLabel("—")
+        ide_layout.addWidget(self.info_txd_name)
+        ide_layout.addWidget(self.find_in_ide_btn)
+        layout.addLayout(ide_layout)
+
         return panel
 
+    def _create_right_panel(self): #vers 14
+        """Right panel using QMainWindow + QToolBar for native docking.
+        QMainWindow handles toolbar placement, row stacking, floating, and
+        save/restore natively — same system Gwenview/KDE apps use."""
+        icon_color = self._get_icon_color()
 
-    def _create_right_panel(self): #vers 12
-        """Create right panel — DockableToolbar layout (same as COL Workshop)."""
-        from apps.components.Model_Editor.dockable_toolbar import DockableToolbar
-        icon_color = self._get_icon_color()   # used by info row buttons below
         panel = QFrame()
         panel.setFrameStyle(QFrame.Shape.StyledPanel)
         panel.setMinimumWidth(200)
         self._right_panel_ref = panel
-        main_layout = QVBoxLayout(panel)
-        main_layout.setContentsMargins(4, 4, 4, 4)
-        main_layout.setSpacing(3)
+        outer_layout = QVBoxLayout(panel)
+        outer_layout.setContentsMargins(4, 4, 4, 4)
+        outer_layout.setSpacing(3)
 
-        # - Top toolbar row
-        left_toolbar = self._create_transform_icon_panel()
-        main_layout.addWidget(left_toolbar, stretch=0)
-        left_toolbar.set_dock_position('top')
+        # Inner QMainWindow — owns the viewport as central widget and all
+        # QToolBars. Embedded as a plain widget (no window chrome).
+        from PyQt6.QtWidgets import QMainWindow
+        inner_mw = QMainWindow()
+        inner_mw.setWindowFlags(Qt.WindowType.Widget)
+        inner_mw.setDockOptions(
+            QMainWindow.DockOption.AllowNestedDocks |
+            QMainWindow.DockOption.AllowTabbedDocks)
+        self._inner_mw = inner_mw
 
-        # - Preview row: viewport + right dockable toolbar
-        preview_row = QHBoxLayout()
-        preview_row.setSpacing(3)
-
+        # Central widget — the 3D viewport, wrapped in a stack so the
+        # 4-Pane view (Top/Front/Side/Perspective) can be swapped in without
+        # disturbing QMainWindow's central-widget ownership.
+        from PyQt6.QtWidgets import QStackedWidget
         self.preview_widget = DFFViewport()
         self.preview_widget._workshop_ref = self
-        preview_row.addWidget(self.preview_widget, stretch=1)
-        self.preview_row = preview_row
-        # GLViewportMixin compatibility — preview_widget IS the GL viewport
+        self._viewport_stack = QStackedWidget()
+        self._viewport_stack.addWidget(self.preview_widget)   # index 0: single view
+        inner_mw.setCentralWidget(self._viewport_stack)
         self._gl_viewport  = self.preview_widget
         self._qp_viewport  = self.preview_widget
         self._gl_mode      = True
 
         self._create_paint_bar()
 
-        ctrl_frame = self._create_preview_controls()
-        right_toolbar = DockableToolbar(panel, settings_key='model_right_toolbar')
-        right_toolbar.set_content(ctrl_frame)
-        right_toolbar.set_dock_position('right')
-        right_toolbar.reflow_requested.connect(self._reflow_mod_right_toolbar)
-        self._mod_right_toolbar = right_toolbar
-        self.preview_controls   = ctrl_frame
-        preview_row.addWidget(right_toolbar, stretch=0)
+        # Build all toolbars and add to the inner QMainWindow
+        self._build_toolbars(inner_mw, icon_color)
 
-        main_layout.addLayout(preview_row, stretch=1)
+        outer_layout.addWidget(inner_mw, stretch=1)
 
-        left_toolbar._extra_panels  = [self.preview_widget]
-        right_toolbar._extra_panels = [self.preview_widget]
-
+        # Restore saved toolbar state (positions, rows, floating)
         from PyQt6.QtCore import QTimer as _QT
-        # 400ms: wait for parent widget to be fully laid out before restoring
-        _QT.singleShot(400, self._load_mod_toolbar_layouts)
+        _QT.singleShot(400, self._restore_toolbar_state)
 
-        # Information group below
-        info_group = QGroupBox("")
-        info_group.setFont(self.title_font)
-        info_layout = QVBoxLayout(info_group)
-        info_group.setMaximumHeight(180)  # extra 40px for paint row
+        # Save on close
+        self.window_closed.connect(self._save_toolbar_state)
+        self.window_closed.connect(self._save_quad_layout)
 
-        # === LINE 1: collision name ===
-        name_layout = QHBoxLayout()
-        name_label = QLabel("Model Name:")
-        name_label.setFont(self.panel_font)
-        name_layout.addWidget(name_label)
-
-        self.info_name = QLineEdit()
-        self.info_name.setText("Click to edit...")
-        self.info_name.setFont(self.panel_font)
-        self.info_name.setReadOnly(True)
-        self.info_name.setStyleSheet("padding: px; border: 1px solid palette(mid);")
-        #self.info_name.returnPressed.connect(self._save_surface_name)
-        #self.info_name.editingFinished.connect(self._save_surface_name)
-        self.info_name.mousePressEvent = lambda e: self._enable_name_edit(e, False)
-        name_layout.addWidget(self.info_name, stretch=1)
-        info_layout.addLayout(name_layout)
-
-        # - LINE 1b: IDE / TXD link row
-        ide_layout = QHBoxLayout()
-        ide_layout.setSpacing(4)
-
-        ide_lbl = QLabel("IDE:")
-        ide_lbl.setFont(self.panel_font)
-        ide_lbl.setFixedWidth(28)
-        ide_layout.addWidget(ide_lbl)
-
-        self.info_ide_section = QLabel("—")
-        self.info_ide_section.setFont(self.panel_font)
-        self.info_ide_section.setToolTip("IDE section / object type")
-        self.info_ide_section.setFixedWidth(90)
-        ide_layout.addWidget(self.info_ide_section)
-
-        self.info_model_id = QLabel("ID: —")
-        self.info_model_id.setFont(self.panel_font)
-        self.info_model_id.setFixedWidth(70)
-        ide_layout.addWidget(self.info_model_id)
-
-        txd_lbl = QLabel("TXD:")
-        txd_lbl.setFont(self.panel_font)
-        txd_lbl.setFixedWidth(32)
-        ide_layout.addWidget(txd_lbl)
-
-        self.info_txd_name = QLabel("—")
-        self.info_txd_name.setFont(self.panel_font)
-        self.info_txd_name.setToolTip("Linked TXD name from IDE")
-        ide_layout.addWidget(self.info_txd_name, stretch=1)
-
-        self.load_txd_btn = QPushButton("Open TXD")
-        self.load_txd_btn.setFont(self.button_font)
-        self.load_txd_btn.setIcon(self.icon_factory.open_icon(color=icon_color))
-        self.load_txd_btn.setIconSize(QSize(16, 16))
-        self.load_txd_btn.setFixedHeight(26)
-        self.load_txd_btn.setMinimumWidth(80)
-        self.load_txd_btn.setToolTip("Open TXD — uses IDE link if available, else browse")
-        self.load_txd_btn.clicked.connect(self._open_txd_smart)
-        self.load_txd_btn.setEnabled(True)
-        ide_layout.addWidget(self.load_txd_btn)
-
-        self.find_in_ide_btn = QPushButton("IDE Ref")
-        self.find_in_ide_btn.setFont(self.button_font)
-        self.find_in_ide_btn.setIcon(self.icon_factory.search_icon(color=icon_color))
-        self.find_in_ide_btn.setIconSize(QSize(16, 16))
-        self.find_in_ide_btn.setFixedHeight(26)
-        self.find_in_ide_btn.setMinimumWidth(72)
-        self.find_in_ide_btn.setToolTip("Look up model in DAT Browser IDE entries")
-        self.find_in_ide_btn.clicked.connect(self._find_in_ide)
-        self.find_in_ide_btn.setEnabled(True)
-        ide_layout.addWidget(self.find_in_ide_btn)
-
-        # Add Objs/Col and 3D View to the same IDE row
-        self.export_ojs_btn = QPushButton("Objs/Col")
-        self.export_ojs_btn.setFont(self.button_font)
-        self.export_ojs_btn.setFixedHeight(26)
-        self.export_ojs_btn.setToolTip("Export geometry / COL")
-        self.export_ojs_btn.clicked.connect(self.export_all)
-        try:
-            self.export_ojs_btn.setIcon(self.icon_factory.package_icon(color=icon_color))
-            self.export_ojs_btn.setIconSize(QSize(14, 14))
-        except Exception: pass
-        ide_layout.addWidget(self.export_ojs_btn)
-
-        self.gl_viewer_btn = QPushButton("3D View")
-        self.gl_viewer_btn.setFont(self.button_font)
-        self.gl_viewer_btn.setFixedHeight(26)
-        self.gl_viewer_btn.setToolTip("Open GL Model Viewer")
-        self.gl_viewer_btn.clicked.connect(self._open_gl_viewer)
-        try:
-            self.gl_viewer_btn.setIcon(self.icon_factory.cube_icon(color=icon_color))
-            self.gl_viewer_btn.setIconSize(QSize(14, 14))
-        except Exception: pass
-        ide_layout.addWidget(self.gl_viewer_btn)
-
-        info_layout.addLayout(ide_layout)
-
-        # -  LINES 2 & 3: Build BOTH rows, show/hide based on panel width
-        # - Text+label row (wide)
-        # Kept this part, Because we also need to export optimized collision files.
-
-        self._bottom_text_row = QWidget()
-        tr_lay = QVBoxLayout(self._bottom_text_row)
-        tr_lay.setContentsMargins(0, 0, 0, 0)
-        tr_lay.setSpacing(2)
-
-        fmt_lay = QHBoxLayout()
-        fmt_lay.setSpacing(5)
-        self.format_combo = QComboBox()
-        self.format_combo.setFont(self.panel_font)
-        self.format_combo.addItems(["COL", "COL2", "COL3", "COL4"])
-        self.format_combo.currentTextChanged.connect(self._change_format)
-        self.format_combo.setMaximumWidth(100)
-        self.format_combo.setVisible(False)   # shown only when COL is loaded
-        self.format_combo.setToolTip("COL export format — only relevant when exporting collision")
-        fmt_lay.addWidget(self.format_combo)
-        fmt_lay.addStretch()
-
-        """ #commented out, we might beable to use some of this later,
-            #adding more dff model functionality
-
-        for attr, label, icon_fn, tip, slot in [
-            ('switch_btn',     'Mesh',       'flip_vert_icon',  'Cycle render mode',   'switch_surface_view'),
-            ('convert_btn',    'Convert',    'convert_icon',    'Convert format',      '_convert_surface'),
-            ('compress_btn',   'Compress',   'compress_icon',   'Compress',            '_compress_surface'),
-            ('uncompress_btn', 'Uncompress', 'uncompress_icon', 'Uncompress',          '_uncompress_surface'),
-            ('import_btn',     'Import',     'import_icon',     'Import col/cst/3ds',  '_import_selected'),
-            ('export_btn',     'Export',     'export_icon',     'Export col/cst/3ds',  'export_selected'),
-        ]:
-            b = QPushButton(label)
-            b.setFont(self.button_font)
-            b.setIcon(getattr(self.icon_factory, icon_fn)(color=icon_color))
-            b.setIconSize(QSize(20, 20))
-            b.setToolTip(tip)
-            b.clicked.connect(getattr(self, slot))
-            b.setEnabled(False)
-            setattr(self, attr, b)
-            fmt_lay.addWidget(b)
-        tr_lay.addLayout(fmt_lay)
-        """
-
-        # Prelighting removed — not implemented
-        self.prelight_apply_btn = None
-        self.prelight_setup_btn = None
-        self.info_format = None
-        self.show_shadow_btn   = None
-        self.create_shadow_btn = None
-        self.remove_shadow_btn = None
-        info_layout.addWidget(self._bottom_text_row)
-
-        # - Icon-only row (narrow)
-        self._bottom_icon_row = QWidget()
-        ir_lay = QHBoxLayout(self._bottom_icon_row)
-        ir_lay.setContentsMargins(0, 0, 0, 0)
-        ir_lay.setSpacing(2)
-        fmt_ico = QComboBox()
-        fmt_ico.addItems(["COL","COL2","COL3","COL4"])
-        fmt_ico.currentTextChanged.connect(self._change_format)
-        fmt_ico.setMaximumWidth(65)
-        fmt_ico.setVisible(False)  # shown only when COL is loaded
-        ir_lay.addWidget(fmt_ico)
-        for icon_fn, tip, slot in [
-            ('flip_vert_icon',  'Cycle render mode',  'switch_surface_view'),
-            ('convert_icon',    'Convert',            '_convert_surface'),
-            ('compress_icon',   'Compress',           '_compress_surface'),
-            ('uncompress_icon', 'Uncompress',         '_uncompress_surface'),
-            ('import_icon',     'Import',             '_import_selected'),
-            ('export_icon',     'Export',             'export_selected'),
-            ('color_picker_icon', 'Apply Prelighting',   '_apply_prelighting'),
-            ('settings_icon',     'Prelight Setup',      '_prelight_setup_dialog'),
-        ]:
-            b = QPushButton()
-            b.setIcon(getattr(self.icon_factory, icon_fn)(color=icon_color))
-            b.setIconSize(QSize(18, 18))
-            b.setFixedSize(30, 30)
-            b.setToolTip(tip)
-            b.clicked.connect(getattr(self, slot))
-            b.setEnabled(False)
-            ir_lay.addWidget(b)
-        ir_lay.addStretch()
-        info_layout.addWidget(self._bottom_icon_row)
-        self._bottom_icon_row.setVisible(False)
-
-        # - Paint mode row (hidden until paint mode active)
-        main_layout.addWidget(info_group, stretch=0)
         return panel
+
+    def _build_toolbars(self, mw: 'QMainWindow', icon_color: str): #vers 4
+        """Build all QToolBar instances using QAction.
+        Icon set resolved once — 'default' uses SVGIconFactory with currentColor,
+        '3dsmax' uses MaxIconSet with hardcoded Max palette."""
+        from PyQt6.QtWidgets import QToolBar
+        icon_size = QSize(20, 20)
+        pw = self.preview_widget
+        self._ribbon_actions = []
+
+        # Resolve icon set once for all buttons
+        _icon_set = self._get_icon_set()
+        if _icon_set == '3dsmax':
+            from apps.components.Model_Editor.depends.max_icon_set import MaxIconSet as _IS
+        else:
+            _IS = None
+
+        def _icon(default_fn, max_name: str = None):
+            """Return correct icon function for active icon set."""
+            if _IS and max_name and hasattr(_IS, max_name):
+                return getattr(_IS, max_name)
+            return default_fn
+
+        def _tb(name, area=Qt.ToolBarArea.TopToolBarArea):
+            tb = QToolBar(name, mw)
+            tb.setObjectName(name)
+            tb.setIconSize(icon_size)
+            tb.setMovable(True)
+            tb.setFloatable(True)
+            tb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            tb.customContextMenuRequested.connect(
+                lambda pos, t=tb: self._toolbar_context_menu(t, pos))
+            mw.addToolBar(area, tb)
+            return tb
+
+        def _act(tb, name, icon_fn, callback=None, checkable=False,
+                 checked=False, attr=None):
+            """Create a QAction, add to toolbar, register in _ribbon_actions."""
+            try:
+                icon = icon_fn(color=icon_color)
+            except Exception:
+                icon = self.icon_factory.settings_icon(color=icon_color)
+            act = QAction(icon, name, mw)
+            act.setToolTip(name)
+            act.setCheckable(checkable)
+            if checkable:
+                act.setChecked(checked)
+            if callback:
+                if checkable:
+                    act.toggled.connect(callback)
+                else:
+                    act.triggered.connect(callback)
+            tb.addAction(act)
+            self._ribbon_actions.append({
+                'action':    act,
+                'toolbar':   tb,
+                'name':      name,
+                'icon_fn':   icon_fn,
+                'checkable': checkable,
+            })
+            if attr:
+                setattr(self, attr, act)
+            return act
+
+        # ── Ribbon 1: Selection ───────────────────────────────────────────
+        tb_sel = _tb("Selection")
+        from PyQt6.QtGui import QAction, QActionGroup
+        from PyQt6.QtWidgets import QLabel as _QL
+
+        # V/E/F/P as exclusive QActions in an action group
+        sel_group = QActionGroup(mw)
+        sel_group.setExclusive(True)
+
+        def _sel_act(attr, name, mode, icon_fn_name, max_name=None):
+            act = QAction(name, mw)
+            try:
+                fn = _icon(getattr(self.icon_factory, icon_fn_name), max_name or icon_fn_name)
+                act.setIcon(fn(color=icon_color))
+            except Exception:
+                pass
+            act.setToolTip(name)
+            act.setCheckable(True)
+            act.setEnabled(False)
+            act.triggered.connect(lambda _=False, m=mode: self._set_select_mode(m))
+            sel_group.addAction(act)
+            tb_sel.addAction(act)
+            self._ribbon_actions.append({
+                'action': act, 'toolbar': tb_sel, 'name': name,
+                'icon_fn': getattr(self.icon_factory, icon_fn_name, None),
+                'checkable': True,
+            })
+            setattr(self, attr, act)
+            return act
+
+        _sel_act('_sel_vert_act', 'Vertex Select', 'vertex', 'vertex_select_icon', 'vertex_select_icon')
+        _sel_act('_sel_edge_act', 'Edge Select',   'edge',   'edge_select_icon',   'edge_select_icon')
+        _sel_act('_sel_face_act', 'Face Select',   'face',   'face_select_icon',   'face_select_icon')
+        _sel_act('_sel_poly_act', 'Polygon Select','poly',   'poly_select_icon',   'poly_select_icon')
+        self._sel_face_act.setChecked(True)
+        self._select_mode_group = sel_group
+
+        # Selection count label — QToolBar widget (labels can't be QAction)
+        self._sel_count_label = _QL("")
+        self._sel_count_label.setStyleSheet(
+            "color: palette(mid); font-size: 11px; padding: 0 4px;")
+        tb_sel.addWidget(self._sel_count_label)
+
+        tb_sel.addSeparator()
+
+        _act(tb_sel, "Backface Culling",
+             _icon(self.icon_factory.backface_icon, 'backface_cull_icon'),
+             lambda v: self._toggle_backface_cull(),
+             checkable=True, attr='_backface_cull_act')
+
+        _act(tb_sel, "Front-only Paint",
+             self.icon_factory.view_icon,
+             lambda v: self._toggle_front_only_paint(),
+             checkable=True, attr='_front_paint_act')
+
+        # ── Ribbon 2: Snap Targets ────────────────────────────────────────
+        from apps.components.Model_Editor.depends.max_svg_icons import MaxSVGIcons
+        tb_snap = _tb("Snap Targets")
+
+        def _snap_act(attr, target, name, icon_fn_name, max_name=None):
+            # Resolve icon — Max set overrides MaxSVGIcons snap icons
+            if _IS and max_name and hasattr(_IS, max_name):
+                try:
+                    icon = getattr(_IS, max_name)(size=20)
+                except Exception as _e:
+                    print(f"[max snap icon] {max_name}: {_e}")
+                    icon = self.icon_factory.settings_icon(color=icon_color)
+            else:
+                try:
+                    icon = getattr(MaxSVGIcons, icon_fn_name)(size=20, color=icon_color)
+                except Exception as _e:
+                    print(f"[snap icon] {icon_fn_name}: {_e}")
+                    icon = self.icon_factory.settings_icon(color=icon_color)
+            act = QAction(icon, name, mw)
+            act.setToolTip(name)
+            act.setCheckable(True)
+            def _on(checked, t=target, a=act):
+                vp = getattr(self, 'preview_widget', None)
+                if vp and hasattr(vp, '_snap_targets'):
+                    vp.toggle_snap_target(t)
+                    a.setChecked(vp._snap_targets.get(t, False))
+            act.toggled.connect(_on)
+            tb_snap.addAction(act)
+            _fn = getattr(MaxSVGIcons, icon_fn_name, None)
+            self._ribbon_actions.append({
+                'action': act, 'toolbar': tb_snap, 'name': name,
+                'icon_fn': (lambda sz=20, c=icon_color, fn=_fn:
+                            fn(size=sz, color=c)) if _fn else None,
+                'checkable': True,
+            })
+            setattr(self, attr, act)
+            return act
+
+        _snap_act('_snap_grid_act',     'grid',     'Snap: Grid Points', 'snap_grid_icon',     'snap_grid_icon')
+        _snap_act('_snap_pivot_act',    'pivot',    'Snap: Pivot',       'snap_pivot_icon',    'snap_pivot_icon')
+        _snap_act('_snap_vertex_act',   'vertex',   'Snap: Vertex',      'snap_vertex_icon',   'snap_vertex_icon')
+        _snap_act('_snap_endpoint_act', 'endpoint', 'Snap: Endpoint',    'snap_endpoint_icon', 'snap_endpoint_icon')
+        _snap_act('_snap_midpoint_act', 'midpoint', 'Snap: Midpoint',    'snap_midpoint_icon', 'snap_midpoint_icon')
+        _snap_act('_snap_edge_act',     'edge',     'Snap: Edge',        'snap_edge_icon',     'snap_edge_icon')
+        _snap_act('_snap_face_act',     'face',     'Snap: Face',        'snap_face_icon',     'snap_face_icon')
+        tb_snap.addSeparator()
+        _act(tb_snap, "Axis Constraints",
+             _icon(lambda color=icon_color: MaxSVGIcons.snap_axis_constraint_icon(
+                 size=20, color=color), 'snap_axis_icon'),
+             checkable=True, attr='_snap_axis_act')
+        _act(tb_snap, "Angle Snap",
+             _icon(lambda color=icon_color: MaxSVGIcons.snap_angle_icon(
+                 size=20, color=color), 'snap_angle_icon'),
+             checkable=True, attr='_snap_angle_act')
+        _act(tb_snap, "Percent Snap",
+             _icon(lambda color=icon_color: MaxSVGIcons.snap_percent_icon(
+                 size=20, color=color), 'snap_percent_icon'),
+             checkable=True, attr='_snap_percent_act')
+
+        # ── Ribbon 3: Edit Geometry ───────────────────────────────────────
+        tb_geo = _tb("Edit Geometry")
+        _act(tb_geo, "Create Primitive",
+             _icon(lambda color=icon_color: MaxSVGIcons.create_primitive_icon(
+                 size=20, color=color), 'create_primitive_icon'),
+             callback=self._create_primitive_dialog, attr='_prim_act')
+        _act(tb_geo, "Extrude Faces",
+             _icon(lambda color=icon_color: MaxSVGIcons.extrude_icon(
+                 size=20, color=color), 'extrude_icon'),
+             callback=self._extrude_dialog, attr='_extrude_act')
+        tb_geo.addSeparator()
+        _act(tb_geo, "Mirror",
+             _icon(lambda color=icon_color: MaxSVGIcons.mirror_icon(
+                 size=20, color=color), 'mirror_icon'),
+             callback=self._mirror_dialog, attr='_mirror_act')
+        _act(tb_geo, "Align",
+             _icon(lambda color=icon_color: MaxSVGIcons.align_icon(
+                 size=20, color=color), 'align_icon'),
+             callback=self._align_dialog, attr='_align_act')
+
+        # ── Ribbon 4: Navigation ──────────────────────────────────────────
+        tb_nav = _tb("Navigation", Qt.ToolBarArea.RightToolBarArea)
+        _act(tb_nav, "Zoom In",       _icon(self.icon_factory.zoom_in_icon,   'zoom_in_icon'),   pw.zoom_in)
+        _act(tb_nav, "Zoom Out",      _icon(self.icon_factory.zoom_out_icon,  'zoom_out_icon'),  pw.zoom_out)
+        _act(tb_nav, "Reset View",    _icon(self.icon_factory.reset_view_icon,'reset_view_icon'),pw.reset_view)
+        _act(tb_nav, "Fit to Window", _icon(self.icon_factory.fit_icon,       'fit_view_icon'),  pw.fit_to_window)
+        tb_nav.addSeparator()
+        for label, yaw, pitch, default_fn, max_name in [
+            ("View XY",  0,   0,  self.icon_factory.view_xy_icon,  'view_xy_icon'),
+            ("View XZ",  0,  90,  self.icon_factory.view_xz_icon,  'view_xz_icon'),
+            ("View YZ",  90,  0,  self.icon_factory.view_yz_icon,  'view_yz_icon'),
+            ("View Iso", 30, 20,  self.icon_factory.view_iso_icon, 'view_iso_icon'),
+        ]:
+            def _set_v(checked=False, y=yaw, p=pitch):
+                pw._yaw = y; pw._pitch = p; pw.update()
+            _act(tb_nav, label, _icon(default_fn, max_name), _set_v)
+        tb_nav.addSeparator()
+        _act(tb_nav, "4-Pane View",
+             _icon(self.icon_factory.grid_icon, 'grid_icon'),
+             self._toggle_quad_view, checkable=True, attr='_quad_view_act')
+
+        # ── Ribbon 5: Render ──────────────────────────────────────────────
+        tb_rend = _tb("Render", Qt.ToolBarArea.RightToolBarArea)
+        _act(tb_rend, "Render Settings",
+             _icon(self.icon_factory.render_settings_icon, 'render_settings_icon'),
+             self._open_render_settings_dialog)
+        _act(tb_rend, "Toggle Mesh",
+             _icon(self.icon_factory.mesh_icon, 'toggle_mesh_icon'),
+             lambda v: pw.set_show_mesh(v),
+             checkable=True, checked=True, attr='_view_mesh_act')
+        _act(tb_rend, "Toggle Backface",
+             _icon(self.icon_factory.toggle_backface_icon, 'toggle_backface_icon'),
+             lambda v: pw.set_backface(v),
+             checkable=True, attr='_backface_act')
+        _act(tb_rend, "Cycle Render Style",
+             _icon(self.icon_factory.render_style_icon, 'render_style_icon'),
+             self._cycle_view_render_style)
+        tb_rend.addSeparator()
+        _act(tb_rend, "Toggle Shading",
+             _icon(self.icon_factory.shading_sphere_icon, 'shading_icon'),
+             lambda v: self._toggle_viewport_shading(),
+             checkable=True, checked=True, attr='_shading_act')
+        _act(tb_rend, "Light Setup",
+             _icon(self.icon_factory.light_icon, 'light_setup_icon'),
+             self._open_light_setup_dialog, attr='_light_setup_act')
+
+        # Store toolbar refs
+        self._tb_selection = tb_sel
+        self._tb_snap      = tb_snap
+        self._tb_geometry  = tb_geo
+        self._tb_nav       = tb_nav
+        self._tb_render    = tb_rend
+
+        # DFF-only actions — disabled until a model is loaded
+        self._dff_only_actions = [
+            self._sel_vert_act, self._sel_edge_act,
+            self._sel_face_act, self._sel_poly_act,
+            self._backface_cull_act, self._front_paint_act,
+            self._prim_act, self._extrude_act,
+            self._shading_act, self._light_setup_act,
+        ]
+        # Legacy compat for code that checks _dff_only_toolbar_btns
+        self._dff_only_toolbar_btns = []
+
+        # Compatibility attrs for code using old QPushButton names
+        self._sel_vert_btn   = None
+        self._sel_edge_btn   = None
+        self._sel_face_btn   = None
+        self._sel_poly_btn   = None
+
+    def _toolbar_context_menu(self, toolbar, pos): #vers 2
+        """Right-click context menu on any toolbar."""
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+
+        # Icon Set submenu
+        icon_set_menu = menu.addMenu("Icon Set")
+        current = self._get_icon_set()
+        for label, key in [("Default (theme-aware)", 'default'),
+                            ("3ds Max style",         '3dsmax')]:
+            act = icon_set_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(current == key)
+            act.triggered.connect(lambda _, k=key: self._switch_icon_set(k))
+
+        # Icon Size submenu
+        size_menu = menu.addMenu("Icon Size")
+        from PyQt6.QtWidgets import QSlider, QWidgetAction
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(14, 40)
+        slider.setSingleStep(2)
+        try:
+            import json
+            from pathlib import Path
+            data = json.loads((Path.home()/'.config'/'imgfactory'/'model_workshop.json').read_text())
+            slider.setValue(data.get('icon_scale', 20))
+        except Exception:
+            slider.setValue(20)
+        slider.valueChanged.connect(self._apply_icon_scale)
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(slider)
+        size_menu.addAction(wa)
+
+        menu.addSeparator()
+        menu.addAction("Ribbon Manager...", self.open_ribbon_manager)
+        menu.addSeparator()
+        from PyQt6.QtWidgets import QToolBar as _QTB
+        menu.addAction("Lock All Toolbars",
+            lambda: [tb.setMovable(False)
+                     for tb in self._inner_mw.findChildren(_QTB)])
+        menu.addAction("Unlock All Toolbars",
+            lambda: [tb.setMovable(True)
+                     for tb in self._inner_mw.findChildren(_QTB)])
+        menu.exec(toolbar.mapToGlobal(pos))
+
+    def _switch_icon_set(self, key: str): #vers 1
+        """Save icon set choice and rebuild toolbars to apply it."""
+        try:
+            import json
+            from pathlib import Path
+            path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                data = {}
+            data['icon_set'] = key
+            path.write_text(json.dumps(data, indent=2))
+        except Exception as _e:
+            print(f"[icon_set] save failed: {_e}")
+        # Rebuild toolbars live
+        self._rebuild_toolbars()
+
+    def _rebuild_toolbars(self): #vers 1
+        """Remove all existing toolbars and rebuild with the current icon set."""
+        mw = getattr(self, '_inner_mw', None)
+        if mw is None:
+            return
+        from PyQt6.QtWidgets import QToolBar
+        for tb in list(mw.findChildren(QToolBar)):
+            mw.removeToolBar(tb)
+            tb.deleteLater()
+        self._ribbon_actions = []
+        icon_color = self._get_icon_color()
+        self._build_toolbars(mw, icon_color)
+        self._set_status(f"Icon set applied")
+
+    def _apply_icon_scale(self, px: int): #vers 1
+        """Apply icon size to all toolbars live and persist it."""
+        mw = getattr(self, '_inner_mw', None)
+        if mw:
+            from PyQt6.QtWidgets import QToolBar
+            from PyQt6.QtCore import QSize
+            for tb in mw.findChildren(QToolBar):
+                tb.setIconSize(QSize(px, px))
+        try:
+            import json
+            from pathlib import Path
+            path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                data = {}
+            data['icon_scale'] = px
+            path.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
+
+    def open_ribbon_manager(self): #vers 1
+        """Open the Ribbon Manager dialog."""
+        dlg = RibbonManagerDialog(self, parent=self)
+        dlg.exec()
+
+    def _save_toolbar_state(self): #vers 1
+        """Save QMainWindow toolbar state to model_workshop.json."""
+        mw = getattr(self, '_inner_mw', None)
+        if mw is None:
+            return
+        try:
+            import json
+            from pathlib import Path
+            path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                data = {}
+            data['toolbar_state'] = mw.saveState().toHex().data().decode()
+            path.write_text(json.dumps(data, indent=2))
+            self._set_status("Ribbon config saved")
+            main_wnd = getattr(self, 'main_window', None)
+            if main_wnd and hasattr(main_wnd, 'log_message'):
+                main_wnd.log_message("Model Workshop: Ribbon config saved")
+        except Exception as _e:
+            print(f"[ModelWorkshop] _save_toolbar_state error: {_e}")
+
+    def _restore_toolbar_state(self): #vers 1
+        """Restore QMainWindow toolbar state from model_workshop.json."""
+        mw = getattr(self, '_inner_mw', None)
+        if mw is None:
+            return
+        try:
+            import json
+            from pathlib import Path
+            from PyQt6.QtCore import QByteArray
+            path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+            if not path.exists():
+                return
+            data = json.loads(path.read_text())
+            state_hex = data.get('toolbar_state')
+            if state_hex:
+                mw.restoreState(QByteArray.fromHex(state_hex.encode()))
+                self._set_status("Ribbon config loaded")
+                main_wnd = getattr(self, 'main_window', None)
+                if main_wnd and hasattr(main_wnd, 'log_message'):
+                    main_wnd.log_message("Model Workshop: Ribbon config loaded")
+        except Exception as _e:
+            print(f"[ModelWorkshop] _restore_toolbar_state error: {_e}")
 
 
     def _create_paint_bar(self): #vers 3
@@ -7896,7 +9088,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                 _bar.raise_()
         vp.resizeEvent = _on_vp_resize
 
-    def _create_preview_controls(self): #vers 8
+    def _create_preview_controls(self): #vers 7
         """Right toolbar icon grid — DockableToolbar pattern."""
         from PyQt6.QtWidgets import QGridLayout
         icon_color = self._get_icon_color()
@@ -7954,9 +9146,6 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         btn("Cycle Render Style", self.icon_factory.color_picker_icon,
             self._cycle_view_render_style)
 
-        btn("4-Pane View (Top/Front/Side/Perspective)", self.icon_factory.grid_icon,
-            self._toggle_quad_view, checkable=True, checked=False)
-
         self._mod_place_ctrl_grid(1)
         return ctrl_frame
 
@@ -8005,7 +9194,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
     def _create_quad_viewport(self): #vers 1
         """Build the 2x2 quad viewport, resizable via splitters, each pane's
         view is user-assignable (right-click). Perspective pane stays free-
-        rotate; Top/Front/Side panes are locked to ortho projection."""
+        rotate; Top/Front/Side panes are locked to ortho projection. Added
+        as a second page of self._viewport_stack."""
         presets = [
             ("Top",         0,   0, 'ortho'),
             ("Front",       0,  90, 'ortho'),
@@ -8037,6 +9227,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self._quad_container  = quad
         self._quad_top_row    = top_row
         self._quad_bottom_row = bottom_row
+        self._viewport_stack.addWidget(quad)
 
         self._load_quad_layout()
         return quad
@@ -8068,20 +9259,18 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self._save_quad_layout()
 
     def _toggle_quad_view(self, checked): #vers 1
-        """Swap preview_row between the single viewport and the 4-pane view."""
-        row = self.preview_row
+        """Swap the central-widget stack between the single viewport and the
+        4-pane view."""
         if checked:
             if not hasattr(self, '_quad_container'):
-                row.insertWidget(0, self._create_quad_viewport())
+                self._create_quad_viewport()
                 self.preview_widget._on_geometry_loaded = self._sync_quad_from_main
-            self.preview_widget.hide()
-            self._quad_container.show()
+            self._viewport_stack.setCurrentWidget(self._quad_container)
             self._sync_quad_from_main()
         else:
             if hasattr(self, '_quad_container'):
-                self._quad_container.hide()
                 self._save_quad_layout()
-            self.preview_widget.show()
+            self._viewport_stack.setCurrentWidget(self.preview_widget)
 
     def _sync_quad_from_main(self): #vers 1
         """Mirror the main viewport's loaded geometry into the 4 quad panes."""
@@ -9299,6 +10488,19 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                 pass
         return '#cccccc'
 
+    def _get_icon_set(self) -> str: #vers 1
+        """Return active icon set: 'default' or '3dsmax'.
+        Read from model_workshop.json 'icon_set' key."""
+        try:
+            import json
+            from pathlib import Path
+            path = Path.home() / '.config' / 'imgfactory' / 'model_workshop.json'
+            if path.exists():
+                return json.loads(path.read_text()).get('icon_set', 'default')
+        except Exception:
+            pass
+        return 'default'
+
 
     def _apply_fonts_to_widgets(self): #vers 1
         """Apply fonts from AppSettings to all widgets"""
@@ -9459,23 +10661,29 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             f"Imported: {fname}\n{len(verts)} vertices, {len(faces)} faces\n"
             f"Note: OBJ geometry loaded as preview. DFF write-back in next session.")
 
-    def _export_model_menu(self): #vers 1
-        """Show export format menu: COL, CST, OBS, 3DS, OBJ…"""
+    def _export_model_menu(self): #vers 2
+        """Show export format menu — DFF geometry + COL + other formats."""
         from PyQt6.QtWidgets import QMenu
         menu = QMenu(self)
-        menu.addAction("Export as OBJ (Wavefront)",  self._export_dff_obj)
-        menu.addAction("Export as COL (collision)",   self._export_col_data)
-        menu.addSeparator()
+        menu.addSection("Geometry")
+        menu.addAction("Export as OBJ (Wavefront)",    self._export_dff_obj)
         menu.addAction("Export as 3DS (3D Studio)",
             lambda: self._export_not_implemented("3DS"))
+        menu.addAction("Export as FBX",
+            lambda: self._export_not_implemented("FBX"))
+        menu.addSection("Collision")
+        menu.addAction("Export as COL (collision)",    self._export_col_data)
+        menu.addSection("Other")
         menu.addAction("Export as CST (Crysis)",
             lambda: self._export_not_implemented("CST"))
         menu.addAction("Export as OBS (OpenBVE)",
             lambda: self._export_not_implemented("OBS"))
-        menu.addAction("Export as FBX",
-            lambda: self._export_not_implemented("FBX"))
-        menu.exec(self.export_col_btn.mapToGlobal(
-            self.export_col_btn.rect().bottomLeft()))
+        # Pop up below whichever button called us
+        btn = getattr(self, 'export_col_btn', None)
+        if btn:
+            menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        else:
+            menu.exec(self.cursor().pos())
 
     def _export_not_implemented(self, fmt: str): #vers 1
         from PyQt6.QtWidgets import QMessageBox
@@ -10317,7 +11525,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
         if found_count:
             if pw:
-                pw.set_render_style('textured')
+                pw.set_render_mode('textured')
                 pw.update()
             if mw and hasattr(mw, 'log_message'):
                 mw.log_message(
@@ -10493,7 +11701,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             elif pw and hasattr(pw, 'load_textures'):
                 pw.load_textures(textures)
                 if len(textures) > 0:
-                    pw.set_render_style('textured')
+                    pw.set_render_mode('textured')
         except Exception as e:
             import traceback; traceback.print_exc()
             QMessageBox.critical(self, "TXD Error",
@@ -11132,13 +12340,88 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             _QTLBL.singleShot(50, fn)
         return obj
 
-    def _open_txd_smart(self): #vers 1
-        """Open TXD — IDE link if available, else browse."""
+    def _open_txd_smart(self): #vers 2
+        """Open TXD — tries in order:
+        1. IDE-linked TXD name → search current IMG (case-insensitive)
+        2. DFF filename stem → search same folder as DFF (case-insensitive)
+        3. DFF filename stem → search game_root recursively (case-insensitive)
+        4. Ask user via file dialog, or skip
+        Works the same whether docked or standalone."""
+        import os, glob
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        mw  = getattr(self, 'main_window', None)
+        dff_path = getattr(self, '_current_dff_path', '') or ''
+
+        # Build candidate TXD names to search for (case-insensitive)
+        candidates = []
         obj = getattr(self, '_current_ide_obj', None)
         if obj and getattr(obj, 'txd_name', ''):
-            self._open_linked_txd()
-        else:
-            self._open_txd_combined()
+            candidates.append(obj.txd_name.lower())
+        if dff_path:
+            candidates.append(os.path.splitext(os.path.basename(dff_path))[0].lower())
+        candidates = list(dict.fromkeys(candidates))   # dedupe, preserve order
+
+        def _open(path):
+            if mw and hasattr(mw, 'open_txd_workshop_docked'):
+                mw.open_txd_workshop_docked(file_path=path)
+            else:
+                from apps.components.Txd_Editor.txd_workshop import open_txd_workshop
+                open_txd_workshop(self, path)
+
+        def _name_matches(filename, candidate):
+            return os.path.splitext(filename.lower())[0] == candidate
+
+        # 1. Search current IMG
+        img = (getattr(mw, 'current_img', None) if mw else None) or \
+              getattr(self, 'current_img', None)
+        if img:
+            for cand in candidates:
+                for entry in getattr(img, 'entries', []):
+                    if _name_matches(entry.name, cand):
+                        if mw and hasattr(mw, 'open_txd_workshop_docked'):
+                            mw.open_txd_workshop_docked(txd_name=entry.name)
+                        return
+
+        # 2. Same folder as DFF — case-insensitive
+        if dff_path:
+            dff_dir = os.path.dirname(dff_path)
+            for fname in os.listdir(dff_dir):
+                if fname.lower().endswith('.txd'):
+                    stem = os.path.splitext(fname.lower())[0]
+                    if stem in candidates:
+                        _open(os.path.join(dff_dir, fname))
+                        return
+
+        # 3. Recursive game_root search
+        xref = self._get_xref() if hasattr(self, '_get_xref') else None
+        game_root = getattr(xref, 'game_root', '') if xref else ''
+        if not game_root and mw:
+            game_root = getattr(mw, '_game_root', '') or ''
+        if game_root:
+            for cand in candidates:
+                for fpath in glob.glob(
+                        os.path.join(game_root, '**', '*.txd'), recursive=True):
+                    if os.path.splitext(os.path.basename(fpath).lower())[0] == cand:
+                        _open(fpath)
+                        return
+
+        # 4. Not found — ask user or skip
+        cand_str = ' / '.join(f"{c}.txd" for c in candidates) or 'TXD'
+        ans = QMessageBox.question(
+            self, "TXD Not Found",
+            f"Could not automatically find '{cand_str}'.\n"
+            "Browse for it, or skip?",
+            QMessageBox.StandardButton.Open |
+            QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Open)
+        if ans == QMessageBox.StandardButton.Open:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open TXD",
+                os.path.dirname(dff_path) if dff_path else '',
+                "TXD Files (*.txd);;All Files (*)")
+            if path:
+                _open(path)
 
     def _open_linked_txd(self): #vers 1
 
@@ -12051,43 +13334,41 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         else:
             QMessageBox.warning(self, "Extract Failed", msg)
 
-    def _save_file(self): #vers 2
-        """Save current COL file — serialises all models via COLWriter."""
-        if not getattr(self, "current_col_file", None):
-            QMessageBox.warning(self, "Save", "No COL file loaded to save")
+    def _save_file(self): #vers 3
+        """Save current DFF model. Falls back to Save As if no path set."""
+        from PyQt6.QtWidgets import QFileDialog
+        dff_model = getattr(self, '_current_dff_model', None)
+        dff_path  = getattr(self, '_current_dff_path', '') or ''
+
+        if not dff_model:
+            QMessageBox.warning(self, "Save", "No DFF model loaded to save.")
             return
 
-        if not self.current_file_path:
-            self._save_file_as()
-            return
-
-        models = getattr(self.current_col_file, 'models', [])
-        if not models:
-            QMessageBox.warning(self, "Save", "No models to save.")
-            return
-
-        try:
-            from apps.components.Model_Editor.depends.col_workshop_parser import COLWriter
-            raw = COLWriter.write_file(models)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            QMessageBox.critical(self, "Serialise Error",
-                f"Failed to serialise COL data:\n{e}")
-            return
+        if not dff_path:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save DFF", '',
+                "DFF Files (*.dff);;MDL Files (*.mdl);;All Files (*)")
+            if not path:
+                return
+            dff_path = path
 
         try:
-            with open(self.current_file_path, 'wb') as f:
+            from apps.components.Model_Editor.depends.dff_parser import DFFWriter
+            raw = DFFWriter.write(dff_model)
+            with open(dff_path, 'wb') as f:
                 f.write(raw)
-            # Update raw_data so a second Save uses the fresh bytes
-            self.current_col_file.raw_data = raw
-            fname = os.path.basename(self.current_file_path)
-            if self.main_window and hasattr(self.main_window, 'log_message'):
-                self.main_window.log_message(
-                    f"Saved COL: {fname} ({len(models)} models, {len(raw):,} bytes)")
+            self._current_dff_path = dff_path
+            fname = os.path.basename(dff_path)
             self._set_status(f"Saved: {fname}")
+            mw = getattr(self, 'main_window', None)
+            if mw and hasattr(mw, 'log_message'):
+                mw.log_message(f"Saved DFF: {fname} ({len(raw):,} bytes)")
+        except NotImplementedError:
+            QMessageBox.information(self, "Save DFF",
+                "DFF round-trip save is not yet fully implemented.\n"
+                "Use Export → OBJ for now.")
         except Exception as e:
-            QMessageBox.critical(self, "Write Error", str(e))
+            QMessageBox.critical(self, "Save Error", str(e))
 
 
     def _save_file_as(self): #vers 1
@@ -13185,7 +14466,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             return
 
         # - COL mode: existing collision menu
-        models = getattr(self.current_col_file, 'models', []) if self.current_col_file else []
+        col_file = getattr(self, 'current_col_file', None)
+        models = getattr(col_file, 'models', []) if col_file else []
         model  = models[row] if 0 <= row < len(models) else None
         menu   = QMenu(self)
 
@@ -13273,16 +14555,15 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         menu.addSeparator()
         render_menu = menu.addMenu("Render Mode")
         pw = getattr(self, 'preview_widget', None)
-        cur_style = getattr(pw, '_render_style', 'semi') if pw else 'semi'
+        cur_style = getattr(pw, '_mode', 'solid') if pw else 'solid'
         for style, label in [('wireframe', 'Wireframe'),
-                              ('semi',     'Semi-transparent'),
                               ('solid',    'Solid'),
                               ('textured', 'Textured')]:
             tick = '✓ ' if cur_style == style else '    '
             act = render_menu.addAction(tick + label)
             if pw:
                 act.triggered.connect(
-                    lambda _=False, s=style, p=pw: p.set_render_style(s))
+                    lambda _=False, s=style, p=pw: p.set_render_mode(s))
 
         # - UV info
         if geom:
@@ -15196,6 +16477,8 @@ def open_model_workshop(main_window, dff_path=None,
             except Exception:
                 idx = main_window.main_tab_widget.addTab(container, tab_label)
             main_window.main_tab_widget.setCurrentIndex(idx)
+            if hasattr(main_window, '_ensure_tab_area_visible'):
+                main_window._ensure_tab_area_visible()
             workshop.show()
         else:
             # Standalone window
@@ -15290,6 +16573,8 @@ def open_col_workshop(main_window, img_path=None): #vers 2
         except Exception:
             idx = main_window.main_tab_widget.addTab(tab_container, tab_label)
         main_window.main_tab_widget.setCurrentIndex(idx)
+        if hasattr(main_window, '_ensure_tab_area_visible'):
+            main_window._ensure_tab_area_visible()
 
         workshop.show()
         return workshop
