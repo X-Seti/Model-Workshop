@@ -1,4 +1,4 @@
-#this belongs in apps/methods/dff_parser.py - Version: 6
+#this belongs in apps/methods/dff_parser.py - Version: 7
 # X-Seti - May08 2026 - Model Workshop - RenderWare DFF Parser
 """
 Parser for GTA RenderWare DFF (Clump) model files.
@@ -28,6 +28,7 @@ from apps.methods.dff_classes import (
 # DFFParser._parse_atomic
 # detect_dff
 # load_dff
+# DFFWriter.write
 
 
 def read_chunk(data: bytes, pos: int):
@@ -445,15 +446,23 @@ class DFFParser:
             ct2, sz2, lib2, p2 = read_chunk(self.data, pos)
             if ct2 == int(RWChunkType.TEXTURE):
                 tp = p2
-                # Texture struct (flags)
+                # STRUCT: filter_flags uint16 (filter | wrap_v<<8 | wrap_u<<12)
+                ct3, sz3, _, p3 = read_chunk(self.data, tp)
+                tp = p3 + sz3  # always advance past struct body
+                if ct3 == int(RWChunkType.STRUCT) and sz3 >= 2:
+                    tex_flags = struct.unpack_from('<H', self.data, p3)[0]
+                    mat.filter_mode = tex_flags & 0xFF
+                    mat.wrap_u      = (tex_flags >> 8) & 0x0F
+                    mat.wrap_v      = (tex_flags >> 12) & 0x0F
+                    if mat.wrap_u == 0: mat.wrap_u = 1
+                    if mat.wrap_v == 0: mat.wrap_v = 1
+                # texture name string chunk
                 ct3, sz3, _, p3 = read_chunk(self.data, tp); tp = p3 + sz3
-                # Texture name string
-                ct3, sz3, _, p3 = read_chunk(self.data, tp)
-                mat.texture_name = self.data[p3:p3+sz3].split(b'\x00')[0].decode('ascii','replace')
-                tp = p3 + sz3
-                # Mask name string
-                ct3, sz3, _, p3 = read_chunk(self.data, tp)
-                mat.texture_mask = self.data[p3:p3+sz3].split(b'\x00')[0].decode('ascii','replace')
+                mat.texture_name = self.data[p3:p3+sz3].split(b'\x00')[0].decode('ascii','replace').strip()
+                # mask string chunk
+                if tp + 12 <= end:
+                    ct3, sz3, _, p3 = read_chunk(self.data, tp)
+                    mat.texture_mask = self.data[p3:p3+sz3].split(b'\x00')[0].decode('ascii','replace').strip()
             pos = p2 + sz2
 
         return mat
@@ -490,4 +499,26 @@ def load_dff(path: str) -> Optional[DFFModel]:
         return None
 
 
-__all__ = ['DFFParser', 'detect_dff', 'load_dff', 'read_chunk']
+class DFFWriter:
+    """Placeholder for DFF round-trip writing - not yet implemented.
+
+    model_workshop.py's _save_file() imports this expecting write() to
+    either work or raise NotImplementedError (it already has a specific
+    except NotImplementedError handler showing a friendly 'not yet
+    implemented, use Export -> OBJ' message) - but this class never
+    actually existed, so the import itself failed with a raw ImportError
+    instead. This stub restores the intended behaviour until DFF writing
+    is actually implemented."""
+
+    @staticmethod
+    def write(dff_model) -> bytes:
+        """Serialize a DFFModel back to raw DFF bytes. Not yet implemented -
+        writing a correct RenderWare clump (frame list, geometry list with
+        binmesh/triangle data, materials, atomics, extensions) is a
+        substantial undertaking distinct from parsing one."""
+        raise NotImplementedError(
+            "DFF round-trip save is not yet implemented - use Export -> OBJ "
+            "or another format for now.")
+
+
+__all__ = ['DFFParser', 'DFFWriter', 'detect_dff', 'load_dff', 'read_chunk']
