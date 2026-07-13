@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in apps/components/Model_Editor/model_workshop.py - Version: 181
+#this belongs in apps/components/Model_Editor/model_workshop.py - Version: 193
 # X-Seti - Apr 2026 - Model Workshop (based on COL Workshop)
 # [FIX] _make_slot_pix crash: imported QPolygonF into local scope.
 # [FIX] Material Editor cube preview crash: added missing QPolygonF import to _open_dff_material_list scope.
@@ -572,7 +572,9 @@ except ImportError:
 
 # Build information
 App_name = "Model Workshop"
-App_build = "119"
+App_build = "193"
+
+#TODO some gta3 dff files show as unknown format, effects standalone and docked versions, loading files from the img files.
 
 # Model Workshop icon available: SVGIconFactory.model_workshop_icon()
 # Use for: DFF edit button in main toolbar, Model Workshop tab icon.
@@ -2871,7 +2873,7 @@ class RibbonManagerDialog(QDialog): #vers 1
         self._action_label.setText(f"{name} — actions")
         for act in tb.actions():
             if act.isSeparator():
-                item = QListWidgetItem("── separator ──")
+                item = QListWidgetItem("- separator -")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
             else:
                 item = QListWidgetItem(act.text() or act.toolTip() or "Action")
@@ -3182,7 +3184,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         self._apply_theme()
 
 
-    def setup_ui(self): #vers 13
+    def setup_ui(self): #vers 14
         """Setup the main UI layout.
 
         EXPERIMENTAL (Jul 2026): three independent QMainWindows, nested:
@@ -3233,6 +3235,17 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         outer_mw.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks |
             QMainWindow.DockOption.AllowTabbedDocks)
+        # Explicit separator styling - when docked inside IMG Factory,
+        # this nested QMainWindow inherits the main app's theme stylesheet
+        # cascading down through the tab widget (standalone has no parent
+        # stylesheet to inherit), which was zeroing out the dock separator
+        # entirely - no visible line/handle between panels, reported bug.
+        # A locally-set stylesheet rule takes precedence over anything
+        # inherited from a parent, so this holds regardless of theme.
+        outer_mw.setStyleSheet(
+            "QMainWindow::separator { "
+            "background: palette(mid); width: 5px; height: 5px; } "
+            "QMainWindow::separator:hover { background: palette(highlight); }")
         self._outer_mw = outer_mw
 
         # Viewport (right_panel, wrapping _inner_mw) is the central widget -
@@ -8521,7 +8534,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             dock.raise_()
             dock.activateWindow()
 
-    def _make_dock_collapsible(self, dock, title): #vers 2
+    def _make_dock_collapsible(self, dock, title): #vers 4
         """Custom title bar for a QDockWidget: double-click anywhere on the
         title (label or empty bar area) to collapse the dock down to just
         this title bar, hiding its content; double-click again to restore.
@@ -8530,6 +8543,13 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         click-and-drag (moving the dock) still works exactly as before,
         since that's handled by mousePressEvent/mouseMoveEvent, untouched
         here."""
+
+        #TODO missing splitter between middle panel and right panel, or right panel, and newly placed "middle panel", that was moved to the right of the right panel.
+        #TODO
+        #X gadgets do not work, and right click menu recovery bar needs work.
+        #TODO
+        #I have disabled the float/dock function as this is meant to effect it's own bar open/collapse, not the surrounding bars that get collapsed.
+
         from PyQt6.QtWidgets import QWidget as _QW, QToolButton as _QTB
 
         bar = _QW()
@@ -8542,24 +8562,25 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         lay.addWidget(lbl)
         lay.addStretch()
 
-        float_btn = _QTB()
-        float_btn.setText("⧉")
-        float_btn.setToolTip("Float/dock")
-        float_btn.setFixedSize(20, 20)
-        float_btn.setAutoRaise(True)
-        float_btn.clicked.connect(lambda: self._toggle_dock_floating(dock))
-        lay.addWidget(float_btn)
+        #float_btn = _QTB()
+        #float_btn.setText("⧉") #keep disabled for now.
+        #float_btn.setToolTip("Float/dock")
+        #float_btn.setFixedSize(20, 20)
+        #float_btn.setAutoRaise(True)
+        #float_btn.clicked.connect(lambda: self._toggle_dock_floating(dock))
+        #lay.addWidget(float_btn)
 
-        close_btn = _QTB()
+        #TODO double clicking the section header seems to work best.
+
+        close_btn = _QTB() #TODO needs checking, View menu does nothing yet.
         close_btn.setText("×")
-        close_btn.setToolTip("Close (use the View menu or another dock's "
-                              "right-click menu to bring it back)")
+        close_btn.setToolTip("Close (use the View menu or another dock's right-click menu to bring it back)")
         close_btn.setFixedSize(20, 20)
         close_btn.setAutoRaise(True)
         close_btn.clicked.connect(dock.close)
         lay.addWidget(close_btn)
 
-        def _dbl_click(event, d=dock):  #vers 1
+        def _dbl_click(event, d=dock): #vers 1
             content = d.widget()
             if content:
                 content.setVisible(not content.isVisible())
@@ -8568,7 +8589,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
 
         dock.setTitleBarWidget(bar)
 
-    def _wrap_middle_panel_with_own_dock_areas(self, content_panel): #vers 3
+    def _wrap_middle_panel_with_own_dock_areas(self, content_panel): #vers 4
         """Give the middle panel its own nested QMainWindow (same pattern
         the right panel already uses for the viewport), so the Name and
         IDE/TXD ribbons have real Left/Right toolbar dock areas specifically
@@ -8584,6 +8605,13 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         middle_mw.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks |
             QMainWindow.DockOption.AllowTabbedDocks)
+        # Same explicit separator styling as outer_mw - prevents the
+        # docked-mode theme-cascade issue that zeroed out separator
+        # visibility from affecting this nested QMainWindow too.
+        middle_mw.setStyleSheet(
+            "QMainWindow::separator { "
+            "background: palette(mid); width: 5px; height: 5px; } "
+            "QMainWindow::separator:hover { background: palette(highlight); }")
         middle_mw.setCentralWidget(content_panel)
         middle_mw.addToolBar(Qt.ToolBarArea.BottomToolBarArea, self._info_ribbons['name'])
         # Explicit break so IDE always sits on its own row below Name,
@@ -8719,7 +8747,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
             pass
         self._set_status(f"Model Info ribbon moved to {location} panel")
 
-    def _create_right_panel(self): #vers 14
+    def _create_right_panel(self): #vers 15
         """Right panel using QMainWindow + QToolBar for native docking.
         QMainWindow handles toolbar placement, row stacking, floating, and
         save/restore natively — same system Gwenview/KDE apps use."""
@@ -8741,6 +8769,13 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
         inner_mw.setDockOptions(
             QMainWindow.DockOption.AllowNestedDocks |
             QMainWindow.DockOption.AllowTabbedDocks)
+        # Same explicit separator styling as outer_mw/middle_mw - guards
+        # against the same docked-mode theme-cascade issue, in case any
+        # dock widgets get added here in future.
+        inner_mw.setStyleSheet(
+            "QMainWindow::separator { "
+            "background: palette(mid); width: 5px; height: 5px; } "
+            "QMainWindow::separator:hover { background: palette(highlight); }")
         self._inner_mw = inner_mw
 
         # Central widget — the 3D viewport, wrapped in a stack so the
@@ -8836,7 +8871,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                 setattr(self, attr, act)
             return act
 
-        # ── Ribbon 1: Selection ───────────────────────────────────────────
+        # - Ribbon 1: Selection
         tb_sel = _tb("Selection")
         from PyQt6.QtGui import QAction, QActionGroup
         from PyQt6.QtWidgets import QLabel as _QL
@@ -8891,7 +8926,8 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
              lambda v: self._toggle_front_only_paint(),
              checkable=True, attr='_front_paint_act')
 
-        # ── Ribbon 2: Snap Targets ────────────────────────────────────────
+        # - Ribbon 2: Snap Targets
+
         from apps.components.Model_Editor.depends.max_svg_icons import MaxSVGIcons
         tb_snap = _tb("Snap Targets")
 
@@ -8950,7 +8986,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                  size=20, color=color), 'snap_percent_icon'),
              checkable=True, attr='_snap_percent_act')
 
-        # ── Ribbon 3: Edit Geometry ───────────────────────────────────────
+        # - Ribbon 3: Edit Geometry
         tb_geo = _tb("Edit Geometry")
         _act(tb_geo, "Create Primitive",
              _icon(lambda color=icon_color: MaxSVGIcons.create_primitive_icon(
@@ -8970,7 +9006,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
                  size=20, color=color), 'align_icon'),
              callback=self._align_dialog, attr='_align_act')
 
-        # ── Ribbon 4: Navigation ──────────────────────────────────────────
+        # - Ribbon 4: Navigation
         tb_nav = _tb("Navigation", Qt.ToolBarArea.RightToolBarArea)
         _act(tb_nav, "Zoom In",       _icon(self.icon_factory.zoom_in_icon,   'zoom_in_icon'),   pw.zoom_in)
         _act(tb_nav, "Zoom Out",      _icon(self.icon_factory.zoom_out_icon,  'zoom_out_icon'),  pw.zoom_out)
@@ -8991,7 +9027,7 @@ class ModelWorkshop(GLViewportMixin, ToolMenuMixin, QWidget): #vers 3
              _icon(self.icon_factory.quad_view_icon, 'quad_view_icon'),
              self._toggle_quad_view, checkable=True, attr='_quad_view_act')
 
-        # ── Ribbon 5: Render ──────────────────────────────────────────────
+        # - Ribbon 5: Render
         tb_rend = _tb("Render", Qt.ToolBarArea.RightToolBarArea)
         _act(tb_rend, "Render Settings",
              _icon(self.icon_factory.render_settings_icon, 'render_settings_icon'),
