@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#This goes in root/apps/utils/app_settings_system.py - version 69
+#This goes in root/apps/utils/app_settings_system.py - version 70
 # $vers" X-Seti - June26, 2025 - App Factory - Package theme settings
 
 """
@@ -3211,20 +3211,36 @@ class AppPanelEffect: #vers 1
                 p.end()
 
     @staticmethod
-    def _paint_fill(p, r, cs): #vers 2
+    def _paint_fill(p, r, cs): #vers 4
         from PyQt6.QtGui import QColor, QLinearGradient
         from PyQt6.QtCore import QPointF
-        ca = QColor(cs.get('panel_fill_a', '#1a1a2e'))
-        cb = QColor(cs.get('panel_fill_b', '#16213e'))
 
-        # If the theme is light but fill colours are dark, use panel_bg instead
+        has_explicit_a = 'panel_fill_a' in cs
+        has_explicit_b = 'panel_fill_b' in cs
+
+        # panel_bg lives in theme JSON, not in current_settings -- fetch properly
         panel_bg = cs.get('panel_bg') or cs.get('bg_primary', '')
-        if panel_bg:
-            theme_col = QColor(panel_bg)
-            if theme_col.lightness() > 128 and ca.lightness() < 64:
-                ca = cb = theme_col
+        if not panel_bg:
+            try:
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app:
+                    win_col = app.palette().color(app.palette().ColorRole.Window)
+                    panel_bg = win_col.name()
+            except Exception:
+                pass
 
-        d  = cs.get('panel_fill_dir', 0)
+        # Fallback priority: explicit user setting > theme's own panel/window
+        # colour (any lightness, not just light themes) > neutral grey. The
+        # old hardcoded '#1a1a2e'/'#16213e' defaults were a fixed navy-purple
+        # tint that showed through on any dark theme that hadn't explicitly
+        # set panel_fill_a/b, regardless of what that theme's actual colours
+        # were - this now matches whatever theme is active instead.
+        default_col = QColor(panel_bg) if panel_bg else QColor('#2a2a2e')
+        ca = QColor(cs.get('panel_fill_a')) if has_explicit_a else default_col
+        cb = QColor(cs.get('panel_fill_b')) if has_explicit_b else default_col
+
+        d = cs.get('panel_fill_dir', 0)
         if d == 0:
             p.fillRect(r, ca)
             return
@@ -3242,19 +3258,32 @@ class AppPanelEffect: #vers 1
         p.fillRect(r, g)
 
     @staticmethod
-    def _paint_gradient(p, r, cs): #vers 2
+    def _paint_gradient(p, r, cs): #vers 4
         from PyQt6.QtGui import QColor, QLinearGradient
         from PyQt6.QtCore import QPointF
-        s1 = QColor(cs.get('panel_grad_stop1', '#1a1a2e'))
-        s2 = QColor(cs.get('panel_grad_stop2', '#2d1b4e'))
-        s3 = QColor(cs.get('panel_grad_stop3', '#16213e'))
 
-        # Light theme guard — if stops are dark but theme is light, use panel_bg
+        has_s1 = 'panel_grad_stop1' in cs
+        has_s2 = 'panel_grad_stop2' in cs
+        has_s3 = 'panel_grad_stop3' in cs
+
+        # Fetch theme window color from QApplication palette as fallback
         panel_bg = cs.get('panel_bg') or cs.get('bg_primary', '')
-        if panel_bg:
-            theme_col = QColor(panel_bg)
-            if theme_col.lightness() > 128 and s1.lightness() < 64:
-                s1 = s2 = s3 = theme_col
+        if not panel_bg:
+            try:
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app:
+                    win_col = app.palette().color(app.palette().ColorRole.Window)
+                    panel_bg = win_col.name()
+            except Exception:
+                pass
+
+        # Same fallback priority fix as _paint_fill - theme colour at any
+        # lightness beats the old hardcoded purple-tinted defaults.
+        default_col = QColor(panel_bg) if panel_bg else QColor('#2a2a2e')
+        s1 = QColor(cs.get('panel_grad_stop1')) if has_s1 else default_col
+        s2 = QColor(cs.get('panel_grad_stop2')) if has_s2 else default_col
+        s3 = QColor(cs.get('panel_grad_stop3')) if has_s3 else default_col
 
         d  = cs.get('panel_grad_dir', 1)
         pts = {
@@ -3309,11 +3338,9 @@ class AppPanelEffect: #vers 1
                 p.drawRect(r.left(), r.top()+row*scale, r.width(), scale)
 
 
-def apply_panel_effects(window, app_settings): #vers 2
+def apply_panel_effects(window, app_settings): #vers 3
     """Walk a window's panels and apply the current panel effect to each.
-    Call this after _apply_theme() in any window that uses app_settings.
-    Panels targeted: QGroupBox, QFrame with StyledPanel, central widget.
-    Skips: AppSettings dialog itself (its own QGroupBox rows should not be painted over).
+    Skips: AppSettings dialog itself.
     """
     from PyQt6.QtWidgets import QGroupBox, QFrame
     cs = app_settings.current_settings
@@ -3322,15 +3349,25 @@ def apply_panel_effects(window, app_settings): #vers 2
     if effect == 'none':
         return
 
-    # Don't apply panel effects to the settings dialog itself — its
-    # font/colour rows are QGroupBoxes that should show plain theme colour.
+    # Don't apply panel effects to the settings dialog itself
     window_class = type(window).__name__
     if 'Settings' in window_class or 'Dialog' in window_class:
         return
 
-    # Target panels — QGroupBox and StyledPanel QFrames
+    # Merge theme colors into cs so _paint_fill can read panel_bg/bg_primary
+    # (these live in the theme JSON, not in current_settings)
+    try:
+        theme_colors = app_settings.get_theme_colors()
+        if theme_colors:
+            # Only add keys not already in cs (cs values take priority)
+            for key in ('panel_bg', 'bg_primary', 'bg_secondary'):
+                if key not in cs and key in theme_colors:
+                    cs = dict(cs)  # shallow copy so we don't mutate saved settings
+                    cs[key] = theme_colors[key]
+    except Exception:
+        pass
+
     for widget in window.findChildren(QGroupBox):
-        # Skip any widget that lives inside a QScrollArea (settings rows)
         parent = widget.parent()
         skip = False
         while parent:
@@ -3340,6 +3377,7 @@ def apply_panel_effects(window, app_settings): #vers 2
             parent = parent.parent() if hasattr(parent, 'parent') else None
         if skip:
             continue
+        widget._app_settings_ref = cs  # pass merged cs
         AppPanelEffect.install(widget, cs)
         widget.update()
 
@@ -3347,6 +3385,7 @@ def apply_panel_effects(window, app_settings): #vers 2
         if widget.objectName() in ('titlebar', 'gadgetbar'):
             continue
         if widget.frameStyle() & QFrame.Shape.StyledPanel.value:
+            widget._app_settings_ref = cs
             AppPanelEffect.install(widget, cs)
             widget.update()
 
