@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+apps/utils
+apps/themes
+apps/images
