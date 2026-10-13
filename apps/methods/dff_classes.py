@@ -97,6 +97,11 @@ class Material:
     diffuse:  float = 1.0
     specular: float = 0.0
     flags: int = 0
+    # RW texture addressing: 0=NONE 1=WRAP 2=CLAMP 3=MIRROR
+    wrap_u: int = 1
+    wrap_v: int = 1
+    # RW filter mode: 0=NONE 1=NEAREST 2=LINEAR 3=MIP_NEAREST 4=MIP_LINEAR 5=LINEAR_MIP_NEAREST 6=LINEAR_MIP_LINEAR
+    filter_mode: int = 2
 
 
 @dataclass

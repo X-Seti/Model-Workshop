@@ -1,4 +1,4 @@
-#this belongs in apps/methods/dff_parser.py - Version: 8
+#this belongs in apps/methods/dff_parser.py - Version: 9
 # X-Seti - May09 2026 - Model Workshop - RenderWare DFF Parser
 """
 Parser for GTA RenderWare DFF (Clump) model files.
@@ -43,6 +43,7 @@ from apps.methods.dff_classes import (
 # DFFParser._parse_atomic
 # detect_dff
 # load_dff
+# DFFWriter.write
 
 
 def read_chunk(data: bytes, pos: int):
@@ -76,6 +77,7 @@ class DFFParser:
             self.errors.append(f"Not a Clump: 0x{ct:08X}")
             return self.model
         self.model.rw_version = lib
+        self.model.raw = bytes(self.data)         # kept so DFFWriter can patch edits back in
         self.rw_ver = _rw_version(lib)
         self._parse_clump(p, p + sz)
         return self.model
@@ -341,10 +343,20 @@ class DFFParser:
             ct2, sz2, lib2, p2 = read_chunk(self.data, pos)
             if ct2 == int(RWChunkType.TEXTURE):
                 tp = p2
-                ct3, sz3, _, p3 = read_chunk(self.data, tp); tp = p3 + sz3
+                # STRUCT: filter_flags uint16 (filter | wrap_v<<8 | wrap_u<<12)
                 ct3, sz3, _, p3 = read_chunk(self.data, tp)
+                tp = p3 + sz3  # always advance past struct body
+                if ct3 == int(RWChunkType.STRUCT) and sz3 >= 2:
+                    tex_flags = struct.unpack_from('<H', self.data, p3)[0]
+                    mat.filter_mode = tex_flags & 0xFF
+                    mat.wrap_u      = (tex_flags >> 8) & 0x0F
+                    mat.wrap_v      = (tex_flags >> 12) & 0x0F
+                    if mat.wrap_u == 0: mat.wrap_u = 1
+                    if mat.wrap_v == 0: mat.wrap_v = 1
+                # texture name string chunk
+                ct3, sz3, _, p3 = read_chunk(self.data, tp); tp = p3 + sz3
                 mat.texture_name = self.data[p3:p3+sz3].split(b'\x00')[0].decode('ascii', 'ignore').strip()
-                tp = p3 + sz3
+                # mask string chunk
                 if tp + 12 <= end:
                     ct3, sz3, _, p3 = read_chunk(self.data, tp)
                     mat.texture_mask = self.data[p3:p3+sz3].split(b'\x00')[0].decode('ascii', 'ignore').strip()
@@ -366,6 +378,52 @@ def detect_dff(data: bytes) -> bool: #vers 1
     return struct.unpack_from('<I', data)[0] == int(RWChunkType.CLUMP)
 
 
+MODEL_EXTS = ('.dff', '.wdr', '.wft', '.mdl', '.nif')   # parse_model_any formats
+
+
+def _with_root_frame(model: Optional[DFFModel], name: str) -> Optional[DFFModel]: #vers 1
+    """Frameless models get a root frame (centring world-placed meshes) and atomics."""
+    if model is not None and not model.frames:
+        stem = name.replace('\\', '/').rsplit('/', 1)[-1].rsplit('.', 1)[0] or 'root'
+        pts = [v for g in model.geometries for v in g.vertices]
+        c = [-(min(getattr(v, a) for v in pts) + max(getattr(v, a) for v in pts)) / 2
+             for a in 'xyz'] if pts else [0.0, 0.0, 0.0]
+        model.frames = [Frame(name=stem, position=Vector3(*c))]
+        model.atomics = [Atomic(frame_index=0, geometry_index=i) for i in range(len(model.geometries))]
+    return model
+
+
+def parse_model_any(data: bytes, name: str = '') -> Optional[DFFModel]: #vers 1
+    """Any supported model: RW DFF (PC/PS2/mobile/PSP), LCS/VCS mdl, IV wdr/wft, Bully nif."""
+    return _with_root_frame(_parse_model_any(data, name), name)
+
+
+def _parse_model_any(data: bytes, name: str = '') -> Optional[DFFModel]: #vers 1
+    """Format dispatch for parse_model_any."""
+    if not data:
+        return None
+    from apps.methods.wdr_model import is_iv_drawable, parse_wdr, wdr_embedded_textures
+    if is_iv_drawable(data):
+        model = parse_wdr(data, name)
+        model.embedded_textures = {t['name'].lower(): t for t in wdr_embedded_textures(data)}
+        return model
+    from apps.methods.nif_model import is_nif_model, parse_nif_model
+    if is_nif_model(data):
+        return parse_nif_model(data, name)
+    from apps.methods.lcs_geometry import is_lcs_dff, parse_lcs_dff
+    if is_lcs_dff(data):
+        return parse_lcs_dff(data, name)
+    from apps.methods.stories_mdl import is_stories_mdl, parse_stories_mdl
+    if is_stories_mdl(data):
+        return parse_stories_mdl(data, name)
+    from apps.methods.ps2_geometry import is_ps2_native_dff, parse_ps2_native_dff
+    if is_ps2_native_dff(data):
+        return parse_ps2_native_dff(data, name)
+    if detect_dff(data):
+        return DFFParser(data, name).parse()
+    return None
+
+
 def load_dff(path: str) -> Optional[DFFModel]: #vers 1
     try:
         with open(path, 'rb') as f:
@@ -378,4 +436,33 @@ def load_dff(path: str) -> Optional[DFFModel]: #vers 1
         return None
 
 
-__all__ = ['DFFParser', 'detect_dff', 'load_dff', 'read_chunk']
+
+class DFFWriter:
+    """Writes a DFFModel back by patching the bytes it was loaded from
+    (apps/methods/dff_patch.py). Only edited fields change; a model that was
+    not edited comes back byte-identical."""
+
+    last_report: List[str] = []
+
+    @staticmethod
+    def write(dff_model) -> bytes: #vers 2
+        """Return the patched DFF bytes. Raises NotImplementedError when the
+        model has no source bytes (a model built from scratch)."""
+        from apps.methods.dff_patch import patch_dff
+        raw = getattr(dff_model, 'raw', None)
+        if not raw and getattr(dff_model, 'source_path', ''):
+            try:
+                with open(dff_model.source_path, 'rb') as f:
+                    raw = f.read()
+            except OSError:
+                raw = None
+        if not raw:
+            raise NotImplementedError(
+                "this model was not loaded from a DFF, so there is nothing to patch - "
+                "export it as OBJ instead")
+        out, report = patch_dff(raw, dff_model)
+        DFFWriter.last_report = report
+        return out
+
+
+__all__ = ['DFFParser', 'DFFWriter', 'detect_dff', 'load_dff', 'read_chunk']

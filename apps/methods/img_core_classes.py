@@ -1,4 +1,4 @@
-#this belongs in methods.img_core_classes.py - Version: 11
+#this belongs in apps/methods/img_core_classes.py - Version: 20
 # X-Seti - November29 2025 - IMG Factory 1.5 - IMG Core Classes with Fixed RW Version Detection
 
 """
@@ -7,20 +7,12 @@ IMG Core Classes
 
 import os
 import struct
-import json
-import shutil
 from enum import Enum
-from typing import List, Dict, Optional, Any, Union, BinaryIO
-from pathlib import Path
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QComboBox, QLineEdit, QGroupBox, QLabel)
-from PyQt6.QtCore import pyqtSignal, Qt
+from typing import List, Dict, Optional, Any, BinaryIO
 
 # Import existing RW version functions - KEPT ALL ORIGINAL IMPORTS
-from apps.methods.rw_versions import get_rw_version_name, parse_rw_version, get_model_format_version
+from apps.methods.rw_versions import get_rw_version_name
 from apps.debug.debug_functions import img_debugger
-from apps.methods.populate_img_table import DragSelectTableWidget
 
 def _find_companion(base_path: str, new_ext: str) -> str:
     # Find companion file case-insensitively.
@@ -63,6 +55,8 @@ def _find_companion(base_path: str, new_ext: str) -> str:
 # detect_img_version
 # format_file_size
 # integrate_filtering
+# _embedded_v1_dir_ok
+# _is_v3_encrypted
 # populate_table_with_sample_data
 # rebuild_img_file
 
@@ -81,25 +75,15 @@ def _find_companion(base_path: str, new_ext: str) -> str:
 # TabFilterWidget
 # ValidationResult
 
-def _is_v3_encrypted(first16: bytes) -> bool:
-    """Return True if first 16 bytes decrypt (AES-256 ECB, 16 rounds) to a valid V3 header start."""
+def _is_v3_encrypted(first16: bytes): #vers 2
+    """True if bytes decrypt to a GTA IV V3 header; None without pycryptodome."""
     try:
-        from Crypto.Cipher import AES
-        import struct as _struct
-        GTAIV_KEY = bytes([
-            0x1a,0xb5,0x6f,0xed,0x7e,0xc3,0xff,0x01,
-            0x22,0x7b,0x69,0x15,0x33,0x97,0x5d,0xce,
-            0x47,0xd7,0x69,0x65,0x3f,0xf7,0x75,0x42,
-            0x6a,0x96,0xcd,0x6d,0x53,0x07,0x56,0x5d,
-        ])
-        data = first16
-        for _ in range(16):
-            data = AES.new(GTAIV_KEY, AES.MODE_ECB).decrypt(data)
-        # After decryption, bytes 4-7 should be Version = 3
-        ver = _struct.unpack('<I', data[4:8])[0]
-        return ver == 3
-    except Exception:
-        return False
+        import Crypto.Cipher  # noqa: F401  pycryptodome
+    except ImportError:
+        return None
+    import struct as _struct
+    from apps.core.img_encryption import _aes_decrypt_block
+    return _struct.unpack('<I', _aes_decrypt_block(first16)[4:8])[0] == 3
 
 
 def _detect_v1_or_v1_5(dir_path: str, img_path: str) -> str:
@@ -203,54 +187,6 @@ class EncryptionType(Enum):
     NONE        = "none"
     FASTMAN92   = "fastman92"
 
-class RecentFilesManager:
-    """Manage recently opened files"""
-    def __init__(self, max_files: int = 10): #vers 1
-        self.max_files = max_files
-        self.recent_files: List[str] = []
-        self.settings_file = "recent_files.json"
-        self._load_recent_files()
-    
-    def _load_recent_files(self): #vers 1
-        """Load recent files from settings"""
-        try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r') as f:
-                    data = json.load(f)
-                    self.recent_files = data.get('recent_files', [])
-        except Exception:
-            self.recent_files = []
-    
-    def _save_recent_files(self): #vers 1
-        """Save recent files to settings"""
-        try:
-            data = {'recent_files': self.recent_files}
-            with open(self.settings_file, 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
-    
-    def add_file(self, file_path): #vers 2
-        """Add file to recent files list"""
-        if file_path in self.recent_files:
-            self.recent_files.remove(file_path)
-        
-        self.recent_files.insert(0, file_path)
-        
-        # Keep only max_files entries
-        if len(self.recent_files) > self.max_files:
-            self.recent_files = self.recent_files[:self.max_files]
-        
-        self._save_recent_files()
-    
-    def get_recent_files(self): #vers 1
-        """Get list of recent files"""
-        # Filter out files that no longer exist
-        existing_files = [f for f in self.recent_files if os.path.exists(f)]
-        if len(existing_files) != len(self.recent_files):
-            self.recent_files = existing_files
-            self._save_recent_files()
-        return self.recent_files
 
 class ValidationResult:
     """Results from entry validation"""
@@ -522,14 +458,6 @@ def _is_xbox_lzo(data: bytes) -> bool:
     return len(data) >= 4 and struct.unpack_from('<I', data, 0)[0] == _XBOX_LZO_MAGIC
 
 
-def _strip_xbox_lzo_header(data: bytes) -> bytes:
-    """If data starts with the Xbox LZO master header (magic 0x67A3A1CE),
-    return data with the 12-byte master header stripped so callers see
-    the first compressed block header.  Otherwise return data unchanged."""
-    if len(data) >= 4 and struct.unpack_from('<I', data, 0)[0] == _XBOX_LZO_MAGIC:
-        return data[12:]   # skip magic(4) + checksum(4) + total_size(4)
-    return data
-
 
 def _scan_rw_version(data: bytes):
     """Scan first 64 bytes of a file for a valid RW version.
@@ -731,17 +659,18 @@ class IMGEntry:
             img_debugger.error(f"Error reading header data for {self.name}: {e}")
             return None
 
-    def _get_file_type_from_extension(self) -> FileType: #vers 1
-        """Get file type from extension"""
-        ext_lower = self.extension.lower()
-        try:
-            return FileType(ext_lower)
-        except ValueError:
-            return FileType.UNKNOWN
 
-    def get_version_text(self) -> str: #vers 3
-        """Get human-readable version text"""
+    def get_version_text(self) -> str: #vers 4
+        """Get human-readable version text (RW, Rage or Gamebryo)"""
         try:
+            if hasattr(self, 'v3_type'):
+                from apps.methods.rw_versions import rage_version_text
+                return (f"Rage {rage_version_text(self.v3_type)}" if self.v3_resource
+                        else f"{self.extension} File")
+            if self.extension in ('NFT', 'NIF'):
+                from apps.methods.rw_versions import gamebryo_version_text
+                ver = gamebryo_version_text(self._read_header_data(64) or b'')
+                return f"Gamebryo {ver}" if ver else "Unknown"
             if self.extension in ['DFF', 'TXD']:
                 if self.size == 0:
                     return "Empty"
@@ -764,13 +693,7 @@ class IMGEntry:
         except:
             return "Unknown"
     
-    def get_offset_in_sectors(self) -> int: #vers 1
-        """Get offset in 2048-byte sectors"""
-        return self.offset // 2048
     
-    def get_size_in_sectors(self) -> int: #vers 1
-        """Get size in 2048-byte sectors (rounded up)"""
-        return (self.size + 2047) // 2048
     
     def get_file_type(self) -> FileType: #vers 1
         """Get file type based on extension"""
@@ -783,9 +706,6 @@ class IMGEntry:
         except ValueError:
             return FileType.UNKNOWN
     
-    def is_renderware_file(self) -> bool: #vers 1
-        """Check if file is a RenderWare format"""
-        return self.extension.upper() in ['DFF', 'TXD']
     
     def validate(self) -> ValidationResult: #vers 1
         """Validate entry data"""
@@ -939,24 +859,6 @@ def detect_img_platform(file_path: str): #vers 3
     except Exception:
         return IMGPlatform.UNKNOWN, {'confidence': 0, 'indicators': ['error']}
 
-def detect_img_platform_inline(file_path: str) -> IMGPlatform: #vers 2
-    """Content-based platform detection (inline, no tuple return)."""
-    try:
-        if _detect_xbox_by_content(file_path):
-            return IMGPlatform.XBOX
-        filename = os.path.basename(file_path).lower()
-        if any(keyword in filename for keyword in ['ps2', 'playstation']):
-            return IMGPlatform.PS2
-        elif any(keyword in filename for keyword in ['xbox']):
-            return IMGPlatform.XBOX
-        elif any(keyword in filename for keyword in ['android', 'mobile']):
-            return IMGPlatform.ANDROID
-        elif any(keyword in filename for keyword in ['psp', 'stories']):
-            return IMGPlatform.PSP
-        else:
-            return IMGPlatform.PC
-    except Exception:
-        return IMGPlatform.UNKNOWN
 
 def get_platform_specific_specs(platform: IMGPlatform) -> Dict[str, Any]: #vers 1
     """INLINE: Get platform-specific specifications"""
@@ -1008,6 +910,29 @@ def get_platform_specific_specs(platform: IMGPlatform) -> Dict[str, Any]: #vers 
         }
     }
     return specs.get(platform, specs[IMGPlatform.PC])
+
+
+def _embedded_v1_dir_ok(path: str) -> bool: #vers 2
+    """True if most embedded directory records are in-file, named entries."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'rb') as f:
+            first_off = struct.unpack('<I', f.read(4) or b'\0' * 4)[0]
+            if not (0 < first_off and first_off * 2048 < size):
+                return False
+            f.seek(0)
+            data = f.read(min(first_off * 2048, 4 << 20))
+    except (OSError, struct.error):
+        return False
+    named = valid = 0
+    for i in range(len(data) // 32):
+        off, cnt = struct.unpack_from('<II', data, i * 32)
+        name = _parse_entry_name(data[i * 32 + 8:i * 32 + 32])
+        if not name:
+            continue
+        named += 1
+        valid += cnt > 0 and '.' in name and (off + cnt) * 2048 <= size
+    return named > 0 and valid * 2 >= named
 
 
 def _parse_entry_name(raw_name_bytes: bytes) -> str:
@@ -1102,10 +1027,12 @@ class IMGFile:
             if not self.file_path or not self.entries:
                 return False
 
-            # Create backup first
-            import shutil
-            backup_path = self.file_path + '.backup'
-            shutil.copy2(self.file_path, backup_path)
+            # Back the archive up first (timestamped + journalled); never rebuild without one
+            from apps.methods.file_backup import backup_file, note_change
+            note_change(f"Rebuild {os.path.basename(self.file_path)}")
+            if os.path.exists(self.file_path) and backup_file(self.file_path) is None:
+                self.last_error = "Backup failed - archive not rewritten"
+                return False
 
             # Rebuild the IMG file
             return self.rebuild_img_file()
@@ -1113,19 +1040,46 @@ class IMGFile:
         except Exception as e:
             return False
 
-    def save(self, file_path=None): #vers 1
-        """Save IMG file - wrapper for save_img_file()"""
-        if file_path:
-            self.file_path = file_path
+    def save(self, file_path=None): #vers 2
+        """Save IMG file. With a path this is Save As (see save_to_path)."""
+        if file_path and file_path != self.file_path:
+            return self.save_to_path(file_path)
         return self.save_img_file()
 
-    def rebuild_img_file(self) -> bool: #vers 1
+    def save_to_path(self, new_path: str) -> bool: #vers 1
+        """Save As: entry data is read from the current file and the archive is written
+        to new_path (an existing file there is backed up first); on success this object
+        then refers to the new file. (Old behaviour pointed file_path at the new, not yet
+        existing file and then tried to read the entries from it.)"""
+        try:
+            from apps.methods.file_backup import backup_file, note_change
+            if os.path.exists(new_path):
+                note_change(f"Save As over {os.path.basename(new_path)}")
+                if backup_file(new_path) is None:
+                    self.last_error = "Backup failed - target not overwritten"
+                    return False
+            self._rebuild_target = new_path
+            try:
+                ok = self.rebuild_img_file()
+            finally:
+                self._rebuild_target = None
+            if ok:
+                self.file_path = new_path
+                self.modified = False
+            return ok
+        except Exception as e:
+            self.last_error = f"Save As failed: {e}"
+            return False
+
+    def rebuild_img_file(self) -> bool: #vers 2
         """Rebuild IMG file based on version"""
         try:
             if self.version == IMGVersion.VERSION_1:
                 return self._rebuild_version1()
             elif self.version == IMGVersion.VERSION_2:
                 return self._rebuild_version2()
+            elif self.version in (IMGVersion.VERSION_3, IMGVersion.VERSION_3_ENC):
+                return self._rebuild_version3()
             else:
                 return False
 
@@ -1154,16 +1108,83 @@ class IMGFile:
             return f"file_{len(self.entries):04d}.dat"
 
 
+    def _rebuild_version3(self) -> bool: #vers 1
+        """Rebuild GTA IV IMG (V3); table re-encrypted when it was."""
+        import struct
+        _out = getattr(self, '_rebuild_target', None) or self.file_path
+        _tmp_img = _out + '.rebuild.tmp'
+        try:
+            datas = [self.read_entry_data(e) for e in self.entries]
+            plain_types = [getattr(e, 'v3_type', 0) for e, d in zip(self.entries, datas)
+                           if d[:4] != b'RSC\x05']
+            plain_type = max(set(plain_types), key=plain_types.count) if plain_types else 0
+            names = b''.join(e.name.encode('ascii', 'replace') + b'\0' for e in self.entries)
+            table_size = len(self.entries) * 16 + len(names)
+            pos = (20 + table_size + 2047) // 2048
+            table = bytearray()
+            for e, d in zip(self.entries, datas):
+                blocks = (len(d) + 2047) // 2048
+                pad = blocks * 2048 - len(d)
+                if d[:4] == b'RSC\x05':
+                    flags, rtype = struct.unpack_from('<I', d, 8)[0], struct.unpack_from('<I', d, 4)[0]
+                    pad |= 0x2000
+                else:
+                    flags, rtype = len(d), getattr(e, 'v3_type', plain_type) or plain_type
+                table += struct.pack('<IIIHH', flags, rtype, pos, blocks, pad)
+                e.offset, e.size = pos * 2048, len(d)
+                pos += blocks
+            table += names
+            header = struct.pack('<IIIIHH', 0xA94E2A52, 3, len(self.entries), table_size,
+                                 16, getattr(self, '_v3_unknown', 0))
+            if self.version == IMGVersion.VERSION_3_ENC:
+                from apps.core.img_encryption import _aes_encrypt_block, _process_buffer
+                header = _aes_encrypt_block(header[:16]) + header[16:]
+                table = _process_buffer(bytes(table), encrypt=True)
+            with open(_tmp_img, 'wb') as f:
+                f.write(header)
+                f.write(table)
+                for e, d in zip(self.entries, datas):
+                    f.seek(e.offset)
+                    f.write(d)
+                end = f.tell()
+                f.write(b'\0' * (((end + 2047) // 2048) * 2048 - end))
+            os.replace(_tmp_img, _out)
+            for e, d in zip(self.entries, datas):
+                e.__dict__.pop('data', None)
+                e._cached_data = None
+            return True
+        except Exception as e:
+            self.last_error = f"Rebuild failed: {e}"
+            if os.path.exists(_tmp_img):
+                os.unlink(_tmp_img)
+            return False
+
     def _rebuild_version2(self) -> bool: #vers 1
         """Rebuild Version 2 IMG file (SA format)"""
         try:
             import struct
             import os
+            _out = getattr(self, '_rebuild_target', None) or self.file_path
+            _tmp_img = _out + '.rebuild.tmp'
 
             # Calculate sizes
             entry_count = len(self.entries)
             directory_size = entry_count * 32  # 32 bytes per entry
-            data_start = directory_size
+            # Real, second bug fixed alongside the missing VER2 magic
+            # above (Aug 20 2026, same discovery) - this used to be
+            # just `directory_size`, with no account for the real
+            # 8-byte header (4-byte "VER2" + 4-byte entry count) that
+            # comes before the directory table, and no sector
+            # alignment either - entry offsets are stored in the real
+            # directory table as SECTORS (offset // 2048 below), so an
+            # unaligned data_start would silently truncate the first
+            # entry's own real sector number down to 0, making it
+            # overlap the header/directory table itself rather than
+            # sitting cleanly after it - checked and fixed here
+            # directly against the real, existing offset-encoding
+            # logic later in this same method, not assumed correct.
+            header_size = 8   # "VER2" (4) + entry count (4)
+            data_start = ((header_size + directory_size + 2047) // 2048) * 2048
 
             # Collect entry data
             entry_data_list = []
@@ -1186,8 +1207,32 @@ class IMGFile:
                 aligned_size = ((len(data) + 2047) // 2048) * 2048
                 current_offset += aligned_size
 
-            # Write new IMG file
-            with open(self.file_path, 'wb') as f:
+            # Write the new IMG next to the old one and swap it in only when complete
+            with open(_tmp_img, 'wb') as f:
+                # Real, confirmed bug fixed here (Aug 20 2026, found
+                # while building a real RadarTex.img export feature
+                # in Map Workshop) - this method never wrote the real
+                # "VER2" magic header at all, anywhere, confirmed
+                # directly by reading this method's own code before
+                # trusting it, not assumed from a symptom alone. Every
+                # real Version 2 IMG file this app itself creates
+                # starts with this exact 4-byte magic (create_version_
+                # 2's own initial write already does this correctly),
+                # but this method runs on every single save_img_file()
+                # call after any add_entry(..., auto_save=False) batch
+                # - so it silently overwrote that correct initial
+                # header with a file starting directly at the
+                # directory table instead, the whole time. A real,
+                # already-existing IMGFile.open() correctly refuses to
+                # recognise a file missing this magic as a real
+                # Version 2 archive at all - so every archive built
+                # via this exact, otherwise-correct call sequence
+                # (create_new -> add_entry(auto_save=False) x N ->
+                # save_img_file) was silently unreadable by this same
+                # app's own reader, not just by chance for one
+                # specific feature.
+                f.write(b'VER2')
+                f.write(struct.pack('<I', entry_count))
                 # Write directory
                 for i, entry in enumerate(self.entries):
                     # Convert to sectors
@@ -1222,10 +1267,17 @@ class IMGFile:
                     if current_pos < sector_end:
                         f.write(b'\x00' * (sector_end - current_pos))
 
+            os.replace(_tmp_img, _out)
             print(f"Rebuilt IMG file: {entry_count} entries")
             return True
 
         except Exception as e:
+            self.last_error = f"Rebuild failed: {e}"
+            try:
+                if os.path.exists(_tmp_img):
+                    os.unlink(_tmp_img)
+            except Exception:
+                pass
             return False
 
     def _rebuild_version1(self) -> bool: #vers 1
@@ -1234,9 +1286,14 @@ class IMGFile:
             import struct
             import os
 
-            # Get DIR and IMG paths
-            dir_path = self.file_path
-            img_path = self.file_path.replace('.dir', '.img')
+            # Get DIR and IMG paths from whichever of the pair was opened. (The old code used
+            # the opened path for BOTH files when it was the .img, so the directory table was
+            # written into the archive and then overwritten by the data.)
+            base, ext = os.path.splitext(getattr(self, '_rebuild_target', None) or self.file_path)
+            up = ext.isupper()
+            dir_path = base + ('.DIR' if up else '.dir')
+            img_path = base + ('.IMG' if up else '.img')
+            _tmp_dir, _tmp_img1 = dir_path + '.rebuild.tmp', img_path + '.rebuild.tmp'
 
             entry_count = len(self.entries)
 
@@ -1262,7 +1319,7 @@ class IMGFile:
                 current_offset += aligned_size
 
             # Write DIR file
-            with open(dir_path, 'wb') as f:
+            with open(_tmp_dir, 'wb') as f:
                 for entry in self.entries:
                     # Convert to sectors
                     offset_sectors = entry.offset // 2048
@@ -1276,7 +1333,7 @@ class IMGFile:
                     f.write(entry_data)
 
             # Write IMG file
-            with open(img_path, 'wb') as f:
+            with open(_tmp_img1, 'wb') as f:
                 for i, data in enumerate(entry_data_list):
                     f.seek(self.entries[i].offset)
                     f.write(data)
@@ -1287,10 +1344,19 @@ class IMGFile:
                     if current_pos < sector_end:
                         f.write(b'\x00' * (sector_end - current_pos))
 
+            os.replace(_tmp_img1, img_path)
+            os.replace(_tmp_dir, dir_path)
             print(f"Rebuilt DIR/IMG pair: {entry_count} entries")
             return True
 
         except Exception as e:
+            self.last_error = f"Rebuild failed: {e}"
+            for _t in (locals().get('_tmp_dir'), locals().get('_tmp_img1')):
+                try:
+                    if _t and os.path.exists(_t):
+                        os.unlink(_t)
+                except Exception:
+                    pass
             return False
 
     def import_file(self, file_path: str) -> bool: #vers 1
@@ -1310,7 +1376,7 @@ class IMGFile:
             return False
 
 
-    def add_entry(self, filename: str, data: bytes, auto_save: bool = True) -> bool: #vers 3
+    def add_entry(self, filename: str, data: bytes, auto_save: bool = True) -> bool: #vers 4
         """Add new entry to IMG file - FIXED VERSION with enhanced debugging"""
         try:
             # CRITICAL: Sanitize filename to prevent corruption
@@ -1379,11 +1445,7 @@ class IMGFile:
             # Only save if requested (for batch operations, set auto_save=False)
             if auto_save:
 
-                if hasattr(self, 'save_img_file'):
-                    success = self.save_img_file()
-                else:
-                    from apps.core.save_img_entry import save_img_file_with_backup
-                    success = save_img_file_with_backup(self)
+                success = self.save_img_file()
 
                 if success:
                     pass
@@ -1400,29 +1462,6 @@ class IMGFile:
             return False
 
 
-    def calculate_next_offset(self) -> int: #vers 1
-        """Calculate the next available offset for a new entry - HELPER METHOD"""
-        try:
-            if not self.entries:
-                # First entry
-                if self.version == IMGVersion.VERSION_1:
-                    return 0  # Version 1 starts at beginning
-                else:
-                    return 0  # Version 2 will be recalculated during save
-
-            # Find the entry that ends the latest
-            max_end = 0
-            for entry in self.entries:
-                entry_end = entry.offset + entry.size
-                if entry_end > max_end:
-                    max_end = entry_end
-
-            # Align to sector boundary (2048 bytes)
-            aligned_offset = ((max_end + 2047) // 2048) * 2048
-            return aligned_offset
-
-        except Exception as e:
-            return 0
 
     def remove_entry(self, filename: str) -> bool: #vers 1
         """Remove entry by filename - HELPER METHOD"""
@@ -1437,12 +1476,6 @@ class IMGFile:
         except Exception as e:
             return False
 
-    def has_entry(self, filename: str) -> bool: #vers 1
-        """Check if entry exists by filename - HELPER METHOD"""
-        try:
-            return any(entry.name == filename for entry in self.entries)
-        except Exception:
-            return False
 
     def get_entry(self, filename: str) -> Optional['IMGEntry']: #vers 1
         """Get entry by filename - HELPER METHOD"""
@@ -1479,26 +1512,8 @@ class IMGFile:
         except Exception as e:
             return 0
 
-    def integrate_fixed_add_entry_methods(img_file_class): #vers 1
-        """Integrate all fixed methods into IMGFile class"""
-        try:
-            # Add the fixed methods to the class
-            img_file_class.add_entry = add_entry
-            img_file_class.calculate_next_offset = calculate_next_offset
-            img_file_class.remove_entry = remove_entry
-            img_file_class.has_entry = has_entry
-            img_file_class.get_entry = get_entry
-            img_file_class.add_multiple_entries = add_multiple_entries
 
-            print("Fixed add_entry methods integrated into IMGFile class")
-            return True
-
-        except Exception as e:
-            print(f"Failed to integrate fixed add_entry methods: {e}")
-            return False
-
-
-    def detect_version(self) -> IMGVersion: #vers 4
+    def detect_version(self) -> IMGVersion: #vers 6
         """Detect IMG version and platform from file"""
         try:
             if not os.path.exists(self.file_path):
@@ -1614,7 +1629,9 @@ class IMGFile:
                         # Check if V3 encrypted: read next 16 bytes, try AES decrypt, check Version==3
                         f.seek(0)
                         first16 = f.read(16)
-                        if _is_v3_encrypted(first16):
+                        _enc = _is_v3_encrypted(first16)
+                        self._crypto_missing = _enc is None
+                        if _enc:
                             self.version = IMGVersion.VERSION_3_ENC
                             return IMGVersion.VERSION_3_ENC
                         dir_path = _find_companion(self.file_path, '.dir')
@@ -1688,6 +1705,16 @@ class IMGFile:
                                 )
                                 self.version = IMGVersion.VERSION_STREAMING_SEG
                                 return IMGVersion.VERSION_STREAMING_SEG
+                            # No .dir, no .lvz: an embedded directory must look real,
+                            # else LCS/VCS world stream data (commer/indust/suburb)
+                            if not _embedded_v1_dir_ok(self.file_path):
+                                self._streaming_segment_error = (
+                                    f"{os.path.basename(self.file_path)} has no .dir and no directory inside.\n\n"
+                                    "PS2 split part (opens via GTA3.DIR) or LCS/VCS stream\n"
+                                    f"data (opens with {os.path.splitext(os.path.basename(self.file_path))[0]}.lvz "
+                                    "in the same folder).")
+                                self.version = IMGVersion.VERSION_STREAMING_SEG
+                                return IMGVersion.VERSION_STREAMING_SEG
                             # No .dir and no .lvz - standalone V1/V1.5, check size
                             sz = os.path.getsize(self.file_path)
                             ver = IMGVersion.VERSION_1_5 if sz > 2 * 1024 * 1024 * 1024 else IMGVersion.VERSION_1
@@ -1702,7 +1729,7 @@ class IMGFile:
         self.version = IMGVersion.UNKNOWN
         return IMGVersion.UNKNOWN
 
-    def open(self) -> bool: #vers 5
+    def open(self) -> bool: #vers 6
         """Open and parse IMG file - FIXED WITH PROPER ENTRY PARSING"""
         try:
             if self.is_open:
@@ -1783,7 +1810,15 @@ class IMGFile:
                 self.is_open = True
                 # FIXED: Parse file types and versions for all entries
                 self._parse_all_entries()
-            
+
+            if getattr(self, '_crypto_missing', False) and not self.entries and \
+                    not _find_companion(self.file_path, '.dir'):
+                self._streaming_segment_error = (
+                    f"{os.path.basename(self.file_path)} may be an encrypted GTA IV IMG.\n\n"
+                    "Install pycryptodome to open it:\n  pip install pycryptodome")
+                self.is_open = False
+                return False
+
             return success
 
         except Exception as e:
@@ -1834,9 +1869,6 @@ class IMGFile:
         except Exception as e:
             pass
 
-    def set_main_window_reference(self, main_window): #vers 1
-        """ADDED: Set main window reference for unknown RW detection"""
-        self._main_window_ref = main_window
 
     def _open_version_2(self) -> bool: #vers 5
         """Open IMG version 2 (single file) - ENHANCED WITH PLATFORM SUPPORT"""
@@ -1914,16 +1946,9 @@ class IMGFile:
         except Exception as e:
             return False
 
-    def _open_version_3(self) -> bool: #vers 1
-        """Open IMG version 3 - GTA IV format (unencrypted or AES-256 ECB encrypted header)."""
+    def _open_version_3(self) -> bool: #vers 4
+        """Open IMG version 3 - GTA IV (plain or AES-encrypted table)."""
         import struct as _struct
-        GTAIV_MAGIC  = 0xA94E2A52
-        GTAIV_KEY = bytes([
-            0x1a,0xb5,0x6f,0xed,0x7e,0xc3,0xff,0x01,
-            0x22,0x7b,0x69,0x15,0x33,0x97,0x5d,0xce,
-            0x47,0xd7,0x69,0x65,0x3f,0xf7,0x75,0x42,
-            0x6a,0x96,0xcd,0x6d,0x53,0x07,0x56,0x5d,
-        ])
         try:
             with open(self.file_path, 'rb') as f:
                 raw_header = f.read(20)
@@ -1931,51 +1956,28 @@ class IMGFile:
             if len(raw_header) < 20:
                 return False
 
-            # Decrypt header if encrypted (16 rounds AES-256 ECB on first 16 bytes)
-            if self.version == IMGVersion.VERSION_3_ENC:
-                try:
-                    from Crypto.Cipher import AES
-                    block = raw_header[:16]
-                    for _ in range(16):
-                        block = AES.new(GTAIV_KEY, AES.MODE_ECB).decrypt(block)
-                    header_data = block + raw_header[16:]
-                except ImportError:
-                    return False
+            encrypted = self.version == IMGVersion.VERSION_3_ENC
+            if encrypted:
+                from apps.core.img_encryption import _aes_decrypt_block, _process_buffer
+                header_data = _aes_decrypt_block(raw_header[:16]) + raw_header[16:]
             else:
                 header_data = raw_header
 
-            magic, version, num_items, table_size, item_size, unknown =                 _struct.unpack('<IIIIHH', header_data[:20])
+            magic, version, num_items, table_size, item_size, unknown = \
+                _struct.unpack('<IIIIHH', header_data[:20])
 
             if version != 3 or item_size != 16:
                 return False
+            self._v3_unknown = unknown
 
-            # Read table (num_items * 16 bytes) + filenames block
-            names_size = table_size - (num_items * 16)
+            # Table and names are one stream; last partial block is plain
             with open(self.file_path, 'rb') as f:
                 f.seek(20)
-                table_data  = f.read(num_items * 16)
-                names_data  = f.read(names_size)
-
-            # Decrypt table + names if encrypted
-            if self.version == IMGVersion.VERSION_3_ENC:
-                try:
-                    from Crypto.Cipher import AES
-                    # Decrypt in 16-byte blocks, 16 rounds each
-                    def _decrypt_block(b):
-                        for _ in range(16):
-                            b = AES.new(GTAIV_KEY, AES.MODE_ECB).decrypt(b)
-                        return b
-                    # Pad to 16-byte boundary, decrypt, trim
-                    def _decrypt_buf(buf):
-                        pad = (16 - len(buf) % 16) % 16
-                        padded = buf + b'\x00' * pad
-                        result = b''.join(_decrypt_block(padded[i:i+16])
-                                          for i in range(0, len(padded), 16))
-                        return result[:len(buf)]
-                    table_data = _decrypt_buf(table_data)
-                    names_data = _decrypt_buf(names_data)
-                except ImportError:
-                    return False
+                table_all = f.read(table_size)
+            if encrypted:
+                table_all = _process_buffer(table_all, encrypt=False)
+            table_data = table_all[:num_items * 16]
+            names_data = table_all[num_items * 16:]
 
             # Parse names (null-separated)
             names = []
@@ -1994,11 +1996,15 @@ class IMGFile:
                 item = table_data[i*16:(i+1)*16]
                 if len(item) < 16:
                     break
-                size_bytes, resource_type, position, size_blocks, _unk =                     _struct.unpack('<IIIHH', item)
+                size_bytes, resource_type, position, size_blocks, pad = \
+                    _struct.unpack('<IIIHH', item)
                 entry = IMGEntry()
                 entry.name        = names[i] if i < len(names) else f'entry_{i}'
                 entry.offset      = position * 2048
-                entry.size        = size_bytes
+                entry.size        = size_blocks * 2048 - (pad & 0x7FF)
+                entry.v3_flags    = size_bytes      # resource flags or plain size
+                entry.v3_type     = resource_type
+                entry.v3_resource = bool(pad & 0x2000)
                 entry.set_img_file(self)
                 self.entries.append(entry)
 
@@ -2097,13 +2103,27 @@ class IMGFile:
         except Exception:
             return False
 
-    def _open_ps2(self) -> bool: #vers 5
+    def _stories_dir(self) -> Optional[dict]: #vers 1
+        """Entries from GAME.DTZ when this is its main LCS/VCS IMG, else None."""
+        from apps.methods.stories_dtz import StoriesDTZ, dtz_paths, find_stories_root
+        lay = dtz_paths(find_stories_root(self.file_path) or os.path.dirname(self.file_path))
+        if not lay or not os.path.samefile(lay[3], self.file_path):
+            return None
+        game, plat, dtz, _img = lay
+        ents = StoriesDTZ(dtz, game, plat).img_entries()
+        self.platform = IMGPlatform.PS2 if plat == 'ps2' else IMGPlatform.PSP
+        return {'entries': [{'name': n, 'offset': o * 2048, 'size': z * 2048,
+                             '_source_ref': f"{os.path.basename(dtz)} @ sector {o}"}
+                            for n, o, z in ents]}
+
+    def _open_ps2(self) -> bool: #vers 6
         """Open PS2/PSP/iOS/Android/Bully/HXD archive - read-only."""
         try:
             from apps.core.img_ps2_vcs import (open_ps2_vcs, open_ps2_v1, open_lvz,
                                                 open_anpk, open_bully, open_hxd)
             if self.version == IMGVersion.VERSION_PS2_VCS:
-                result = open_ps2_vcs(self.file_path)
+                # Main LCS/VCS IMG: directory lives in GAME.DTZ streaming info
+                result = self._stories_dir() or open_ps2_vcs(self.file_path)
             elif self.version in (IMGVersion.VERSION_PS2_V1,
                                   IMGVersion.VERSION_1_IOS):
                 result = open_ps2_v1(self.file_path)
@@ -2189,8 +2209,11 @@ class IMGFile:
         except Exception:
             return False
 
-    def read_entry_data(self, entry: IMGEntry) -> bytes: #vers 3
-        """Read data for a specific entry, transparently decompressing Xbox LZO if needed."""
+    def read_entry_data(self, entry: IMGEntry) -> bytes: #vers 4
+        """Entry bytes: pending replacement data first, else read from file."""
+        pending = entry.__dict__.get('data')
+        if pending:
+            return bytes(pending)
         try:
             # DIR+IMG pair formats: V1, V1_5, SOL, Xbox all use .dir + .img
             if self.version in (IMGVersion.VERSION_1,
@@ -2299,181 +2322,18 @@ def format_file_size(size_bytes: int) -> str: #vers 1
         return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
 
 # ALL ORIGINAL GUI CLASSES PRESERVED EXACTLY AS IN ORIGINAL
-class IMGEntriesTable(DragSelectTableWidget): #vers 2
-    """Enhanced table widget for IMG entries — supports click-drag row selection."""
-    entry_double_clicked = pyqtSignal(object)
 
-    def __init__(self, parent=None): #vers 1
-        super().__init__(parent)
-        self.setColumnCount(7)
-        self.setHorizontalHeaderLabels(['Name', 'Type', 'Size', 'Offset', 'Version', 'Compression', 'Status'])
-        self.setAlternatingRowColors(True)
 
-        # Auto-resize columns
-        header = self.horizontalHeader()
-        header.setStretchLastSection(True)
-        for i in range(6):
-            header.setSectionResizeMode(i, header.ResizeMode.ResizeToContents)
 
-class FilterPanel(QWidget):
-    """Filter panel for IMG entries"""
-    filter_changed = pyqtSignal(str)
-    
-    def __init__(self, parent=None): #vers 1
-        super().__init__(parent)
-        self._setup_ui()
-    
-    def _setup_ui(self): #vers 1
-        layout = QVBoxLayout(self)
-        
-        # File type filter
-        type_group = QGroupBox("File Type Filter")
-        type_layout = QHBoxLayout(type_group)
-        
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(['All', 'DFF', 'TXD', 'COL', 'IFP', 'IPL', 'DAT', 'WAV'])
-        self.type_combo.currentTextChanged.connect(self.filter_changed.emit)
-        type_layout.addWidget(self.type_combo)
-        
-        # Search filter
-        search_group = QGroupBox("Search")
-        search_layout = QHBoxLayout(search_group)
-        
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search entries...")
-        self.search_edit.textChanged.connect(self.filter_changed.emit)
-        search_layout.addWidget(self.search_edit)
-        
-        layout.addWidget(type_group)
-        layout.addWidget(search_group)
 
-class IMGFileInfoPanel(QWidget):
-    """Information panel for IMG file details"""
-    
-    def __init__(self, parent=None): #vers 1
-        super().__init__(parent)
-        self._setup_ui()
-    
-    def _setup_ui(self): #vers 1
-        layout = QVBoxLayout(self)
-        
-        self.info_label = QLabel("No IMG file loaded")
-        layout.addWidget(self.info_label)
 
-class TabFilterWidget(QWidget):
-    """Tab-specific filter widget"""
-    
-    def __init__(self, parent=None): #vers 1
-        super().__init__(parent)
-        self._setup_ui()
-    
-    def _setup_ui(self): #vers 1
-        layout = QHBoxLayout(self)
-        
-        self.filter_combo = QComboBox()
-        self.filter_combo.addItems(['All Files', 'Models (DFF)', 'Textures (TXD)', 'Collision (COL)', 'Animations (IFP)'])
-        layout.addWidget(self.filter_combo)
 
-def integrate_filtering(main_window): #vers 2
-    """Integrate filtering functionality into main window"""
-    try:
-        # Create filter widget
-        filter_widget = FilterPanel(main_window)
-
-        # Connect filter widget to table
-        if hasattr(filter_widget, 'filter_changed'):
-            filter_widget.filter_changed.connect(table_widget.apply_filter)
-
-        return filter_widget
-    except Exception as e:
-        img_debugger.error(f"Error integrating filtering: {e}")
-        return None
-
-def create_entries_table_panel(main_window): #vers 4
-    """Create the complete entries table panel"""
-    panel = QWidget()
-    layout = QVBoxLayout(panel)
-    layout.setContentsMargins(0, 0, 0, 0)
-
-    # IMG file information
-    info_group = QGroupBox("IMG File Information")
-    info_layout = QVBoxLayout(info_group)
-
-    main_window.file_info_panel = IMGFileInfoPanel()
-    info_layout.addWidget(main_window.file_info_panel)
-
-    layout.addWidget(info_group)
-
-    # Filter panel
-    filter_group = QGroupBox("Filter & Search")
-    filter_layout = QVBoxLayout(filter_group)
-
-    main_window.filter_panel = FilterPanel()
-    filter_layout.addWidget(main_window.filter_panel)
-
-    layout.addWidget(filter_group)
-
-    # Entries table
-    entries_group = QGroupBox("Archive Entries")
-    entries_layout = QVBoxLayout(entries_group)
-
-    main_window.entries_table = IMGEntriesTable()
-    entries_layout.addWidget(main_window.entries_table)
-
-    layout.addWidget(entries_group)
-
-    # Connect filter to table
-    main_window.filter_panel.filter_changed.connect(main_window.entries_table.apply_filter)
-
-    # SIMPLIFIED CONNECTION - Let main app handle its own signals
-    # Don't auto-connect anything from here to prevent conflicts
-
-    if hasattr(main_window, 'on_entry_double_clicked'):
-        # Only connect double-click since that doesn't cause logging conflicts
-        try:
-            main_window.entries_table.entry_double_clicked.disconnect()
-        except:
-            pass
-        main_window.entries_table.entry_double_clicked.connect(main_window.on_entry_double_clicked)
-
-    return panel
-
-def create_img_file(output_path: str, version: IMGVersion, **options) -> bool: #vers 2
-    """Create IMG file using appropriate version creator"""
-    img = IMGFile()
-    return img.create_new(output_path, version, **options)
 
 def detect_img_version(file_path: str) -> IMGVersion: #vers 2
     """Detect IMG version without fully opening the file"""
     img = IMGFile(file_path)
     return img.detect_version()
 
-def populate_table_with_sample_data(table): #vers 3
-    """Populate table with sample data for testing"""
-    sample_entries = [
-        {"name": "player.dff", "extension": "DFF", "size": 250880, "offset": 0x2000, "version": "RW 3.6"},
-        {"name": "player.txd", "extension": "TXD", "size": 524288, "offset": 0x42000, "version": "RW 3.6"},
-        {"name": "vehicle.col", "extension": "COL", "size": 131072, "offset": 0x84000, "version": "COL 2"},
-        {"name": "dance.ifp", "extension": "IFP", "size": 1258291, "offset": 0xA4000, "version": "IFP 1"},
-    ]
-
-    # Convert to mock entry objects
-    class MockEntry:
-        def __init__(self, data): #vers 1
-            self.name = data["name"]
-            self.extension = data["extension"]
-            self.size = data["size"]
-            self.offset = data["offset"]
-            self._version = data["version"]
-            self.is_new_entry = False
-            self.is_replaced = False
-            self.compression_type = CompressionType.NONE
-
-        def get_version_text(self): #vers 1
-            return self._version
-
-    mock_entries = [MockEntry(data) for data in sample_entries]
-    table.populate_entries(mock_entries)
 
 # Export classes and functions - EXACTLY AS ORIGINAL
 __all__ = [
@@ -2484,17 +2344,7 @@ __all__ = [
     'IMGEntry',
     'IMGFile',
     'ValidationResult',
-    'RecentFilesManager',
-    'create_img_file',
     'format_file_size',
-    'IMGEntriesTable',
-    'FilterPanel', 
-    'IMGFileInfoPanel',
-    'TabFilterWidget',
-    'integrate_filtering',
-    'create_entries_table_panel',
     'detect_img_version',
-    'populate_table_with_sample_data',
-    'get_img_platform_info',  # ADDED: Platform info function
     'IMGPlatform'  # ADDED: Now exported since moved here
 ]

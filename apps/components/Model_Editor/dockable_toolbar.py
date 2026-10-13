@@ -1,5 +1,6 @@
+#this belongs in apps/components/Model_Editor/dockable_toolbar.py - Version: 13
 """
-apps/components/Txd_Editor/dockable_toolbar.py  — Build 5
+apps/components/Model_Editor/dockable_toolbar.py  — Build 11
 
 Key design:
   - NO separate title bar above icons.
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QCursor, QBrush, QPolygon
+from apps.methods.img_factory_settings import get_user_config_dir
 
 SNAP_NONE   = ''
 SNAP_TOP    = 'top'
@@ -40,24 +42,10 @@ class _EdgeOverlay(QWidget):
         self.hide()
 
 
-    def _get_ui_color(self, key): #vers 1
-        """Return theme-aware QColor. No hardcoded colors - everything via app_settings."""
-        from PyQt6.QtGui import QColor
-        try:
-            app_settings = getattr(self, 'app_settings', None) or \
-                getattr(getattr(self, 'main_window', None), 'app_settings', None)
-            if app_settings and hasattr(app_settings, 'get_ui_color'):
-                return app_settings.get_ui_color(key)
-        except Exception:
-            pass
-        pal = self.palette()
-        if key == 'viewport_bg':
-            return pal.color(pal.ColorRole.Base)
-        if key == 'viewport_text':
-            return pal.color(pal.ColorRole.PlaceholderText)
-        if key == 'border':
-            return pal.color(pal.ColorRole.Mid)
-        return pal.color(pal.ColorRole.WindowText)
+    def _get_ui_color(self, key): #vers 2
+        """Theme QColor via shared helper."""
+        from apps.methods.ui_color import get_ui_color
+        return get_ui_color(self, key)
 
     def set_zone(self, zone: str):
         if zone == self._zone:
@@ -81,13 +69,73 @@ class _EdgeOverlay(QWidget):
         accent.setAlpha(130) if not hasattr(self,'_get_ui_color') else None
         outline = self._get_ui_color('accent_primary') if hasattr(self,'_get_ui_color') else QColor(30,144,255)
         if not hasattr(self,'_get_ui_color'): outline.setAlpha(200)
+
+        # Sibling-relative drop indicator
+        if self._zone.startswith('sibling:'):
+            parts = self._zone.split(':', 2)
+            side = parts[1] if len(parts) > 1 else 'before'
+            target_key = parts[2] if len(parts) > 2 else ''
+            panel = self.parent()
+            target_widget = None
+
+            # Deep search — target may be nested inside row QHBoxLayouts
+            def _find_in(lo):
+                for i in range(lo.count()):
+                    item = lo.itemAt(i)
+                    if item and item.widget():
+                        if getattr(item.widget(), '_settings_key', '') == target_key:
+                            return item.widget()
+                    elif item and item.layout():
+                        result = _find_in(item.layout())
+                        if result:
+                            return result
+                return None
+
+            if panel and panel.layout():
+                target_widget = _find_in(panel.layout())
+
+            if target_widget:
+                tl = target_widget.mapTo(panel, QPoint(0, 0))
+                insert_accent = QColor(self._get_ui_color('accent_primary'))
+                insert_accent.setAlpha(220)
+                p.setPen(QPen(insert_accent, 3))
+                p.setBrush(QBrush(insert_accent))
+
+                if side in ('before', 'after'):
+                    # Vertical stacking — horizontal insertion line at top/bottom edge
+                    if side == 'before':
+                        y = tl.y()
+                    else:
+                        y = tl.y() + target_widget.height()
+                    p.drawLine(4, y, panel.width() - 4, y)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.drawPolygon(QPolygon([QPoint(2, y-5), QPoint(2, y+5), QPoint(10, y)]))
+                    p.drawPolygon(QPolygon([QPoint(panel.width()-2, y-5),
+                                            QPoint(panel.width()-2, y+5),
+                                            QPoint(panel.width()-10, y)]))
+                elif side in ('left', 'right'):
+                    # Horizontal stacking — vertical insertion line at left/right edge
+                    if side == 'left':
+                        x = tl.x()
+                    else:
+                        x = tl.x() + target_widget.width()
+                    y0 = tl.y()
+                    y1 = tl.y() + target_widget.height()
+                    p.drawLine(x, y0 + 4, x, y1 - 4)
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.drawPolygon(QPolygon([QPoint(x-5, y0+2), QPoint(x+5, y0+2), QPoint(x, y0+10)]))
+                    p.drawPolygon(QPolygon([QPoint(x-5, y1-2), QPoint(x+5, y1-2), QPoint(x, y1-10)]))
+            return
+
         bands = {
             SNAP_TOP:    QRect(0,     0,     w, T),
             SNAP_BOTTOM: QRect(0,     h-T,   w, T),
             SNAP_LEFT:   QRect(0,     0,     T, h),
             SNAP_RIGHT:  QRect(w-T,   0,     T, h),
         }
-        band = bands[self._zone]
+        band = bands.get(self._zone)
+        if band is None:
+            return
         p.fillRect(band, accent)
         p.setPen(QPen(outline, 2))
         p.drawRect(band.adjusted(1, 1, -1, -1))
@@ -95,7 +143,7 @@ class _EdgeOverlay(QWidget):
         p.setPen(QPen(_tc, 1))
         labels = {SNAP_TOP:'▼ Top', SNAP_BOTTOM:'▲ Bottom',
                   SNAP_LEFT:'▶ Left', SNAP_RIGHT:'◀ Right'}
-        p.drawText(band, Qt.AlignmentFlag.AlignCenter, labels[self._zone])
+        p.drawText(band, Qt.AlignmentFlag.AlignCenter, labels.get(self._zone, ''))
 
 
 #    Grip button — lives inline with the icons                                  
@@ -108,6 +156,11 @@ class _GripHandle(QPushButton):
     """
     drag_started  = pyqtSignal(QPoint)
     click_release = pyqtSignal()
+
+    def _get_ui_color(self, key): #vers 1
+        """Theme colour via methods/ui_color."""
+        from apps.methods.ui_color import get_ui_color
+        return get_ui_color(self, key)
 
     def __init__(self, size: int = 28, parent=None):
         super().__init__(parent)
@@ -287,6 +340,63 @@ class _FloatWindow(QWidget):
             self._overlay.set_zone(zone)
 
     def _calc_zone(self, gp: QPoint) -> str:
+        SIBLING_T = 30
+        panel = self._panel
+        if panel and panel.layout():
+            plo = panel.layout()
+            for i in range(plo.count()):
+                item = plo.itemAt(i)
+                if not item:
+                    continue
+                candidates = []
+                if item.widget() and isinstance(item.widget(), DockableToolbar):
+                    candidates.append((item.widget(), False))  # (widget, in_row)
+                elif item.layout():
+                    for j in range(item.layout().count()):
+                        sub = item.layout().itemAt(j)
+                        if sub and sub.widget() and isinstance(sub.widget(), DockableToolbar):
+                            candidates.append((sub.widget(), True))  # in a row layout
+                for sib, in_row in candidates:
+                    if sib is self or not sib.isVisible():
+                        continue
+                    try:
+                        sib_tl = sib.mapToGlobal(QPoint(0, 0))
+                    except Exception:
+                        continue
+                    sw, sh = sib.width(), sib.height()
+                    # Extended hit rect — generous horizontal, tight vertical
+                    hit = QRect(sib_tl.x() - SIBLING_T, sib_tl.y() - SIBLING_T,
+                                sw + SIBLING_T * 2, sh + SIBLING_T * 2)
+                    if not hit.contains(gp):
+                        continue
+                    lc = gp - sib_tl
+                    key = getattr(sib, '_settings_key', '')
+
+                    # Intent-based detection — NOT min-distance, which always
+                    # picks top/bottom for thin horizontal bars.
+                    #
+                    # LEFT/RIGHT (same-row horizontal stacking):
+                    # Cursor is to the left of the bar OR to the right of it,
+                    # AND within SIBLING_T of that edge. Only fire if the cursor
+                    # is NOT primarily above/below the bar (i.e. within its
+                    # vertical span with some tolerance).
+                    in_vertical_span = -SIBLING_T//2 <= lc.y() <= sh + SIBLING_T//2
+                    if in_vertical_span:
+                        if lc.x() < 0 and abs(lc.x()) <= SIBLING_T:
+                            return f'sibling:left:{key}'
+                        if lc.x() > sw and (lc.x() - sw) <= SIBLING_T:
+                            return f'sibling:right:{key}'
+
+                    # BEFORE/AFTER (new-row vertical stacking):
+                    # Cursor is above or below the bar within SIBLING_T.
+                    in_horizontal_span = -20 <= lc.x() <= sw + 20
+                    if in_horizontal_span:
+                        if lc.y() < 0 and abs(lc.y()) <= SIBLING_T:
+                            return f'sibling:before:{key}'
+                        if lc.y() > sh and (lc.y() - sh) <= SIBLING_T:
+                            return f'sibling:after:{key}'
+
+        # --- Original panel-edge detection ---
         for panel in [self._panel] + self._extra_panels:
             if not panel or not panel.isVisible():
                 continue
@@ -313,7 +423,7 @@ class _FloatWindow(QWidget):
         return SNAP_NONE
 
     # Allow dragging the static float window anywhere (not just title bar)
-    def changeEvent(self, event): #vers 1
+    def changeEvent(self, event): #vers 2
         """Repaint grip when palette changes (theme switch)."""
         super().changeEvent(event)
         from PyQt6.QtCore import QEvent
@@ -446,6 +556,49 @@ class DockableToolbar(QWidget):
             win.redock.connect(self._on_redock)
             self._float_win = win
             self.show()
+
+        elif zone.startswith('sibling:'):
+            # Sibling-relative insertion — parse 'sibling:before/after:<key>'
+            parts = zone.split(':', 2)
+            side = parts[1] if len(parts) > 1 else 'before'
+            target_key = parts[2] if len(parts) > 2 else ''
+            self._remove_from_dock()
+            # Find the target sibling and its parent layout
+            panel = self._panel
+            target_widget = None
+            target_layout = None
+            if panel:
+                def _find_in_layout(lo, key):
+                    for i in range(lo.count()):
+                        item = lo.itemAt(i)
+                        if item and item.widget():
+                            if getattr(item.widget(), '_settings_key', '') == key:
+                                return item.widget(), lo
+                        elif item and item.layout():
+                            result = _find_in_layout(item.layout(), key)
+                            if result:
+                                return result
+                    return None
+                result = _find_in_layout(panel.layout(), target_key)
+                if result:
+                    target_widget, target_layout = result
+            if target_widget and target_layout:
+                # before/after = vertical stacking (new row above/below)
+                # left/right = horizontal stacking (same row, insert beside)
+                for i in range(target_layout.count()):
+                    item = target_layout.itemAt(i)
+                    if item and item.widget() is target_widget:
+                        insert_at = i if side in ('before', 'left') else i + 1
+                        target_layout.insertWidget(insert_at, self, stretch=0)
+                        break
+            elif panel and panel.layout():
+                panel.layout().insertWidget(0, self, stretch=0)
+            self._floating = False
+            self.set_dock_position(SNAP_TOP)
+            self.show()
+            self.dock_position_changed.emit(SNAP_TOP)
+            QTimer.singleShot(50, lambda: self.reflow_requested.emit(SNAP_TOP))
+
         else:
             self._floating = False
             self._dock_to(zone)
@@ -522,7 +675,7 @@ class DockableToolbar(QWidget):
 
     #    Settings save/load                                                     
     def _settings_path(self) -> Path:
-        cfg = Path.home() / '.config' / 'imgfactory'
+        cfg = get_user_config_dir()
         cfg.mkdir(parents=True, exist_ok=True)
         return cfg / 'model_toolbar_layout.json'
 
@@ -543,7 +696,10 @@ class DockableToolbar(QWidget):
         except Exception:
             return False
 
-    def load_layout(self) -> bool:
+    def load_layout(self, skip_redock: bool = False) -> bool:
+        """Restore saved dock state. If skip_redock=True, only restores
+        collapsed state — caller is responsible for placement (used when
+        the ribbon row system handles layout, so _on_redock doesn't fight it)."""
         try:
             path = self._settings_path()
             if not path.exists():
@@ -556,16 +712,14 @@ class DockableToolbar(QWidget):
             collapsed = cfg.get('collapsed', False)
             floating  = cfg.get('floating',  False)
 
-            if floating:
-                # Re-float after layout settles
-                QTimer.singleShot(250,
-                    lambda: self._on_drag_started(
-                        self.mapToGlobal(QPoint(self.width()//2, self.height()//2))))
-            else:
-                # Redock to saved position — triggers reflow via signal
-                self._on_redock(pos)
+            if not skip_redock:
+                if floating:
+                    QTimer.singleShot(250,
+                        lambda: self._on_drag_started(
+                            self.mapToGlobal(QPoint(self.width()//2, self.height()//2))))
+                else:
+                    self._on_redock(pos)
 
-            # Restore collapsed state after redock
             if collapsed != self._collapsed:
                 QTimer.singleShot(60, self._toggle_collapse)
 
@@ -582,6 +736,36 @@ class DockableToolbar(QWidget):
         dock_sub.addAction("Bottom", lambda: self._on_redock(SNAP_BOTTOM))
         dock_sub.addAction("Left",   lambda: self._on_redock(SNAP_LEFT))
         dock_sub.addAction("Right",  lambda: self._on_redock(SNAP_RIGHT))
+
+        menu.addSeparator()
+
+        # Snap to sibling ribbon — explicit alternative to drag-and-drop
+        panel = self._panel
+        siblings = []
+        if panel and panel.layout():
+            def _collect(lo):
+                for i in range(lo.count()):
+                    item = lo.itemAt(i)
+                    if item and item.widget():
+                        w = item.widget()
+                        if isinstance(w, DockableToolbar) and w is not self:
+                            siblings.append(w)
+                    elif item and item.layout():
+                        _collect(item.layout())
+            _collect(panel.layout())
+
+        if siblings:
+            snap_sub = menu.addMenu("Stack beside ribbon…")
+            for sib in siblings:
+                key = getattr(sib, '_settings_key', '')
+                name = key.replace('model_', '').replace('_toolbar', '').replace('_', ' ').title()
+                snap_sub.addAction(f"← Before '{name}'",
+                    lambda _=False, k=key: self._on_redock(f'sibling:left:{k}'))
+                snap_sub.addAction(f"→ After '{name}'",
+                    lambda _=False, k=key: self._on_redock(f'sibling:right:{k}'))
+            snap_sub.addSeparator()
+            snap_sub.addAction("Move to own row",
+                lambda: self._on_redock(SNAP_TOP))
 
         menu.addSeparator()
 
@@ -602,7 +786,22 @@ class DockableToolbar(QWidget):
         layout_sub.addAction("Load saved layout",   self.load_layout)
         layout_sub.addAction("Reset to default",    lambda: self._on_redock(SNAP_TOP))
 
+        menu.addSeparator()
+        ribbon_act = menu.addAction("Ribbon Manager...")
+        ribbon_act.triggered.connect(self._open_ribbon_manager)
+
         menu.exec(global_pos)
+
+    def _open_ribbon_manager(self): #vers 1
+        """Walk up the parent chain to find the ModelWorkshop and open
+        the Ribbon Manager dialog from the grip handle right-click menu."""
+        parent = self._panel
+        while parent is not None:
+            if hasattr(parent, 'open_ribbon_manager'):
+                parent.open_ribbon_manager()
+                return
+            parent = parent.parent() if callable(
+                getattr(parent, 'parent', None)) else None
 
     def _save_layout_notify(self):
         ok = self.save_layout()

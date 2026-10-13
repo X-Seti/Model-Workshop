@@ -1,4 +1,4 @@
-#this belongs in methods/imgfactory_ui_settings.py - Version: 7
+#this belongs in methods/imgfactory_ui_settings.py - Version: 9
 # X-Seti - February04 2026 - IMG Factory 1.6 - IMG Factory Settings Dialog
 
 """
@@ -14,9 +14,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QFont
 from apps.methods.img_factory_settings import IMGFactorySettings
+from apps.methods.img_factory_settings import get_user_config_dir
 
 ##Methods list -
 # apply_compact_buttons
+# apply_windows_frame
 # get_collapse_threshold
 # show_imgfactory_settings_dialog
 
@@ -78,7 +80,7 @@ class IMGFactorySettingsDialog(QDialog): #vers 2
         # Add buttons
         main_layout.addLayout(self._create_buttons())
 
-    def _create_general_tab(self): #vers 1
+    def _create_general_tab(self): #vers 2
         """Create General settings tab"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -131,7 +133,7 @@ class IMGFactorySettingsDialog(QDialog): #vers 2
 
         # Welcome / intro screen
         import os, json as _j
-        _pref = os.path.expanduser('~/.config/imgfactory/welcome_prefs.json')
+        _pref = os.path.join(get_user_config_dir(), 'welcome_prefs.json')
         _show_welcome = True
         try: _show_welcome = _j.load(open(_pref)).get('show_on_startup', True)
         except Exception: pass
@@ -770,7 +772,7 @@ class IMGFactorySettingsDialog(QDialog): #vers 2
         layout.addStretch()
         return widget
 
-    def _save_settings(self): #vers 2 Fixed
+    def _save_settings(self): #vers 3 Fixed
         """Save all settings to file"""
         # General tab
         self.img_settings.set("auto_save_on_import", self.auto_save_cb.isChecked())
@@ -782,7 +784,7 @@ class IMGFactorySettingsDialog(QDialog): #vers 2
         # Save welcome screen preference to its own JSON (shared with welcome_screen.py)
         try:
             import os, json as _j
-            _pref = os.path.expanduser('~/.config/imgfactory/welcome_prefs.json')
+            _pref = os.path.join(get_user_config_dir(), 'welcome_prefs.json')
             _data = {}
             try: _data = _j.load(open(_pref))
             except Exception: pass
@@ -1022,6 +1024,20 @@ def show_imgfactory_settings_dialog(main_window): #vers 2
             "Error",
             f"Failed to open IMG Factory Settings: {str(e)}"
         )
+
+
+def apply_windows_frame(widget): #vers 1
+    """Windows 11: remove white DWM border on frameless windows, keep rounded corners."""
+    import sys
+    if sys.platform != 'win32':
+        return
+    import ctypes
+    hwnd = ctypes.c_void_p(int(widget.winId()))
+    corner = ctypes.c_int(2)             # DWMWCP_ROUND
+    border = ctypes.c_uint(0xFFFFFFFE)   # DWMWA_COLOR_NONE
+    dwm = ctypes.windll.dwmapi           # Win10 ignores attributes 33/34
+    dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner))
+    dwm.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), ctypes.sizeof(border))
 
 
 def apply_compact_buttons(buttons_meta: list, available_width: int,
