@@ -1,4 +1,4 @@
-#this belongs in apps/methods/model_cache.py - Version: 16
+#this belongs in apps/methods/model_cache.py - Version: 17
 """
 ModelCache - loads and caches DFF geometry + TXD textures for map
 instance rendering, resolving models by name from a set of IMG
@@ -183,7 +183,7 @@ def _limit_texture(tex: dict, limits) -> dict: #vers 1
     return _shrink_texture(tex, *lim) if lim else tex
 
 
-def _shrink_texture(tex: dict, threshold: int, target: int) -> dict: #vers 2
+def _shrink_texture(tex: dict, threshold: int, target: int) -> dict: #vers 3
     """Texture over threshold reduced to fit target (mip level reused); mips dropped."""
     w, h = tex.get('width', 0), tex.get('height', 0)
     dxt = dict.get(tex, 'dxt_levels')
@@ -192,7 +192,8 @@ def _shrink_texture(tex: dict, threshold: int, target: int) -> dict: #vers 2
             return tex
         keep = [lv for lv in dxt if max(lv[0], lv[1]) <= target]
         if keep:
-            tex.update(dxt_levels=keep, width=keep[0][0], height=keep[0][1], mipmaps=len(keep))
+            tex.update(dxt_levels=keep, width=keep[0][0], height=keep[0][1], mipmaps=len(keep),
+                       compressed_size=sum(len(lv[2]) for lv in keep))   # info shows the kept size
             return tex
         rgba = tex.get('rgba_data')           # no small mip: decode, resize below
         del tex['dxt_levels']
@@ -419,14 +420,19 @@ class ModelCache:
         except Exception as e:
             self.index_errors.append(f"{img_path}/{entry.name}: {e}")
 
-    def set_texture_limit(self, limits: Dict[str, Tuple[int, int]], keep_dxt: bool = False) -> None: #vers 4
-        """Per-format limits {group: (over, down_to)} and DXT keep; change drops cache."""
+    def set_texture_limit(self, limits: Dict[str, Tuple[int, int]], keep_dxt: bool = False) -> bool: #vers 5
+        """Per-format limits {group: (over, down_to)} and DXT keep; change drops
+        cached textures and models with embedded textures (IV .wdr / .wft). True if changed."""
         limits = {g: (int(a), int(b)) for g, (a, b) in (limits or {}).items()}
-        if limits != self.texture_limit or bool(keep_dxt) != self.keep_dxt:
-            self.texture_limit = limits
-            self.keep_dxt = bool(keep_dxt)
-            self._texture_cache.clear()
-            self._texture_cache.update(self._virtual_textures)   # prebuilt sets stay
+        if limits == self.texture_limit and bool(keep_dxt) == self.keep_dxt:
+            return False
+        self.texture_limit = limits
+        self.keep_dxt = bool(keep_dxt)
+        self._texture_cache.clear()
+        self._texture_cache.update(self._virtual_textures)   # prebuilt sets stay
+        for key in [k for k, m in self._geometry_cache.items() if getattr(m, 'embedded_textures', None)]:
+            del self._geometry_cache[key]                     # re-parsed at the new limit
+        return True
 
     def _apply_limit(self, textures): #vers 2
         """Per-format texture limit applied to a {name: texture} dict (in place)."""
