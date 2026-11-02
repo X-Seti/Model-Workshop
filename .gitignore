@@ -11,3 +11,6 @@ dist/
 /_internal/
 /*.exe
 .venv/
+/*_dist/
+/Model_Workshop
+/Model_Workshop.app/
